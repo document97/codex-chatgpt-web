@@ -714,7 +714,8 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   }
 });
 
-test("authenticated targeted cancellation terminates one browser trace without reopening it", async () => {
+for (const reason of [undefined, "browser_surface_bootstrap_timeout", "helper_heartbeat_expired"] as const)
+test(`targeted cancellation preserves peer turns and its cause: ${reason ?? "user close"}`, async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);
   chatGptTurnSessions.clear();
@@ -728,9 +729,9 @@ test("authenticated targeted cancellation terminates one browser trace without r
     physicalSettlement: targetBrowser.then(() => undefined, () => undefined),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
-    cancel: () => {
+    cancel: reason => {
       targetCancelled += 1;
-      rejectTarget(new Error("tab closed"));
+      rejectTarget(reason ?? new Error("tab closed"));
     },
   }), "trace_target");
   chatGptTurnSessions.getOrCreate("other-key", () => ({
@@ -746,7 +747,7 @@ test("authenticated targeted cancellation terminates one browser trace without r
     const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turn`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer invalid" },
-      body: JSON.stringify({ traceId: "trace_target" }),
+      body: JSON.stringify({ traceId: "trace_target", ...(reason ? { reason } : {}) }),
     });
     expect(unauthorized.status).toBe(401);
 
@@ -756,7 +757,7 @@ test("authenticated targeted cancellation terminates one browser trace without r
         "content-type": "application/json",
         authorization: `Bearer ${config.controlToken}`,
       },
-      body: JSON.stringify({ traceId: "trace_target" }),
+      body: JSON.stringify({ traceId: "trace_target", ...(reason ? { reason } : {}) }),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -768,7 +769,7 @@ test("authenticated targeted cancellation terminates one browser trace without r
     });
     expect(targetCancelled).toBe(1);
     expect(otherCancelled).toBe(0);
-    expect(target.settledOutcome()).toMatchObject({ type: "error" });
+    expect(target.settledOutcome()).toMatchObject({ type: "error", error: { code: reason ?? "client_cancelled", retryable: false } });
     expect(chatGptTurnSessions.getOrCreate("target-key", () => {
       throw new Error("cancelled trace must remain terminal");
     }, "trace_target")).toBe(target);
@@ -1301,6 +1302,117 @@ test("authenticated shutdown requires a verified idle drain", async () => {
     }
     expect(stopped).toBe(true);
   } finally {
+    await server.stop(true);
+  }
+});
+
+test("native fallback keeps cached Codex providers usable after the launcher closes", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const upstreamModels: string[] = [];
+  const server = startServer(config, {
+    restoreNativeRoute: () => ({ changed: true, active: false }),
+    fetchUpstream: async request => {
+      if (new URL(request.url).pathname.endsWith("/models")) {
+        return Response.json({
+          models: [{
+            slug: "gpt-5.6-sol",
+            display_name: "5.6 Sol",
+            visibility: "list",
+            supported_in_api: true,
+            supported_reasoning_levels: [],
+            tool_mode: "code_mode_only",
+          }],
+        });
+      }
+      const body = await request.clone().json() as { model?: string };
+      upstreamModels.push(body.model ?? "");
+      return Response.json({ id: "resp_native", object: "response", status: "completed", output: [] });
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const authorization = { authorization: `Bearer ${config.controlToken}`, "content-type": "application/json" };
+
+  try {
+    const activated = await fetch(`${endpoint}/admin/native-fallback`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({ watchedPids: [process.pid] }),
+    });
+    expect(activated.status).toBe(200);
+    expect(await activated.json()).toMatchObject({ status: "ok", native_fallback_only: true });
+
+    const health = await fetch(`${endpoint}/healthz`).then(response => response.json());
+    expect(health.native_fallback_only).toBe(true);
+
+    const catalog = await fetch(`${endpoint}/v1/models`, {
+      headers: { authorization: "Bearer native-session" },
+    }).then(response => response.json()) as { models: Array<{ slug: string }> };
+    expect(catalog.models.map(model => model.slug)).toContain("chatgpt-web/high");
+
+    const native = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: "Bearer native-session", "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", stream: false, input: [] }),
+    });
+    expect(native.status).toBe(200);
+    expect(upstreamModels).toEqual(["gpt-5.6-sol"]);
+
+    const web = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: "Bearer native-session", "content-type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-web/high", stream: false, input: [] }),
+    });
+    expect(web.status).toBe(503);
+    expect(upstreamModels).toEqual(["gpt-5.6-sol"]);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("fallback restores disk routing while preserving an in-flight native response and remote compaction", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  let restored = false;
+  const signals: AbortSignal[] = [];
+  const paths: string[] = [];
+  const releases: Array<() => void> = [];
+  const server = startServer(config, {
+    restoreNativeRoute: () => { restored = true; return { changed: true, active: false }; },
+    fetchUpstream: async request => {
+      signals.push(request.signal);
+      paths.push(new URL(request.url).pathname);
+      await new Promise<void>(resolve => releases.push(resolve));
+      return Response.json({ output: [], status: "completed" });
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const requests = ["responses", "responses/compact"].map(path => fetch(`${endpoint}/v1/${path}`, {
+    method: "POST",
+    headers: { authorization: "Bearer fixture-native-session", "content-type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: [], stream: false }),
+  }));
+  try {
+    const deadline = Date.now() + 2_000;
+    while (releases.length < 2 && Date.now() < deadline) await Bun.sleep(5);
+    expect(releases).toHaveLength(2);
+    const result = await fetch(`${endpoint}/admin/native-fallback`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.controlToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ watchedPids: [process.pid] }),
+    });
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ native_fallback_only: true, native_route_restored: true });
+    expect(restored).toBe(true);
+    expect(signals.every(signal => !signal.aborted)).toBe(true);
+    releases.forEach(release => release());
+    for (const request of requests) {
+      const response = await request;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ status: "completed" });
+    }
+    expect(paths.sort()).toEqual(["/backend-api/codex/responses", "/backend-api/codex/responses/compact"]);
+  } finally {
+    releases.forEach(release => release());
+    await Promise.allSettled(requests);
     await server.stop(true);
   }
 });

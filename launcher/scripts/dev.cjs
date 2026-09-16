@@ -6,6 +6,7 @@ const vitePackage = require.resolve("vite/package.json", { paths: [root] });
 const viteBin = path.join(path.dirname(vitePackage), "bin", "vite.js");
 const electronBin = require("electron");
 const bun = process.env.CODEX_WEB_GPT_BUN || process.execPath;
+const productionProfile = process.argv.includes("--production-profile");
 
 const helperBuild = spawnSync(bun, ["run", "scripts/build-browser-helper.ts"], {
   cwd: path.resolve(root, ".."),
@@ -44,7 +45,7 @@ const waitForVite = async () => {
 };
 
 void waitForVite().then(() => {
-  electron = spawn(electronBin, [root, "--dev-profile"], {
+  electron = spawn(electronBin, [root, ...(productionProfile ? [] : ["--dev-profile"])], {
     cwd: root,
     stdio: "inherit",
     env: {

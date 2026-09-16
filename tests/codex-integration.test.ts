@@ -653,6 +653,23 @@ describe("reversible native Codex route integration", () => {
     expect(() => readFileSync(cachePath, "utf8")).toThrow();
   });
 
+  test("keeps the manually installed model roster across route lifecycle changes", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const cachePath = getCodexModelsCachePath();
+    const installedModels = '{"models":["gpt-5.6-sol","chatgpt-web/high"]}\n';
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+
+    installCodexIntegration(nativeConfig("browser-only"));
+    writeFileSync(cachePath, installedModels);
+
+    deactivateCodexIntegration();
+    expect(readFileSync(cachePath, "utf8")).toBe(installedModels);
+
+    activateCodexIntegration();
+    expect(readFileSync(cachePath, "utf8")).toBe(installedModels);
+  });
+
   test("requires explicit replacement and preserves every non-port route assignment", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");

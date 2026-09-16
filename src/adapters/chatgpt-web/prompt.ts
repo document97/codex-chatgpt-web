@@ -7,7 +7,7 @@ import {
 } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { estimateTokens } from "../../lib/token-estimate";
-import type { CodexAssistantContentPart, CodexContentPart, CodexMessage, CodexParsedRequest } from "../../types";
+import type { CodexAssistantContentPart, CodexContentPart, CodexFileContent, CodexImageContent, CodexMessage, CodexParsedRequest } from "../../types";
 import { isOnePixelPngDataUrl, isReadableCompactionSummaryText } from "../../responses/compaction";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
@@ -21,9 +21,21 @@ export interface ChatGptWebPromptImage {
   detail?: string;
 }
 
+export interface ChatGptWebPromptFile {
+  ref: string;
+  name: string;
+  mimeType: string;
+  /** Inline base64 or data URL; decoded only in the browser helper. */
+  data: string;
+  /** Estimated model input represented by generated textual files. */
+  estimatedTokens?: number;
+}
+
 export interface CompiledChatGptWebPrompt {
   text: string;
   images: ChatGptWebPromptImage[];
+  files?: ChatGptWebPromptFile[];
+  attachmentNotices?: string[];
   /** DEV-only transactional context transport. Production prompts remain inline. */
   multipart?: ChatGptWebMultipartPrompt;
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
@@ -33,6 +45,8 @@ export interface CompiledChatGptWebPrompt {
 export interface CompileChatGptWebPromptOptions {
   captureLunaCheckpoint?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  /** Internal planner probe: measure raw inline fit before choosing multipart transport. */
+  disableGeneratedTextAttachments?: true;
   /**
    * Manual Zero Risk transport keeps ChatGPT model/effort selection and prompt submission under the
    * user's control. The browser bridge may open the owned tab and copy this prompt, but it never
@@ -143,7 +157,7 @@ export function formatChatGptWebMultipartCommit(
   ].join("\n");
 }
 
-const RETIRED_TURN_HANDLE = /\b(turn|request|binding)_[A-Za-z0-9_-]{24,}/g;
+const RETIRED_TURN_HANDLE = /(?<![A-Za-z0-9_-])(turn|request|binding)_[A-Za-z0-9_-]{32}(?![A-Za-z0-9_-])/g;
 
 /**
  * The accumulated Codex context replays earlier turns, including the broker handles those turns
@@ -151,11 +165,206 @@ const RETIRED_TURN_HANDLE = /\b(turn|request|binding)_[A-Za-z0-9_-]{24,}/g;
  * the current turn is supplied by the contract text, never by the replayed context.
  */
 export function withoutRetiredTurnHandles(contextJson: string): string {
-  return contextJson.replace(RETIRED_TURN_HANDLE, (_handle, kind: string) => `[retired ${kind} handle]`);
+  // Match decoded string values: in serialized JSON a newline's `n` is a word character
+  // immediately before the handle. Leave structural keys and native tool-call IDs intact.
+  return JSON.stringify(JSON.parse(contextJson, (_key, value: unknown) => typeof value === "string"
+    ? value.replace(RETIRED_TURN_HANDLE, (_handle, kind: string) => `[retired ${kind} handle]`)
+    : value));
 }
 
-/** ChatGPT accepts at most this many attachments on one message. */
+/** Conservative hard ceiling for Plus; current-turn attachments always take priority. */
 export const CHATGPT_MAX_INPUT_IMAGES = 10;
+export const CHATGPT_LONG_TEXT_ATTACHMENT_CHARS = 80_000;
+/**
+ * The browser composer accepts more text than ChatGPT's conversation edge will process. A live
+ * 52k-token turn rendered 156k characters and was still rejected as "message too long" after the
+ * browser accepted it. Move accumulated context into one JSON attachment before that boundary
+ * while preserving every role and record verbatim. This is transport shaping, not context loss.
+ */
+export const CHATGPT_INLINE_CONTEXT_ATTACHMENT_CHARS = 120_000;
+const CHATGPT_MIN_HISTORY_ATTACHMENTS = 2;
+const CHATGPT_MAX_HISTORY_ATTACHMENTS = 4;
+const LONG_TEXT_REF = "codex-long-text-1";
+const CONTEXT_FILE_REF = "codex-context-1";
+
+const ACCEPTED_FILE_EXTENSIONS = new Set([
+  ".txt", ".md", ".csv", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".log",
+  ".pdf", ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".toml", ".ini", ".cfg",
+  ".sql", ".sh", ".ps1", ".bat", ".c", ".cpp", ".h", ".hpp", ".java", ".go", ".rs",
+]);
+
+const FILE_MIME_BY_EXTENSION: Record<string, string> = {
+  ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv", ".json": "application/json",
+  ".jsonl": "application/jsonl", ".xml": "application/xml", ".yaml": "text/yaml", ".yml": "text/yaml",
+  ".log": "text/plain", ".pdf": "application/pdf", ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".rtf": "application/rtf", ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+function safeAttachmentName(value: string | undefined, fallback: string): string {
+  const leaf = (value || fallback).replaceAll("\\", "/").split("/").at(-1) || fallback;
+  return leaf.replace(/[^\p{L}\p{N}._ -]+/gu, "_").slice(0, 120) || fallback;
+}
+
+function fileExtension(name: string): string {
+  const match = name.toLowerCase().match(/\.[a-z0-9]+$/);
+  return match?.[0] ?? "";
+}
+
+function fileUpload(part: CodexFileContent): { name: string; mimeType: string; data: string } | { error: string } {
+  const name = safeAttachmentName(part.filename, "codex-attachment.txt");
+  const extension = fileExtension(name);
+  if (!part.fileData) return { error: `${name} has no inline file data` };
+  if (!ACCEPTED_FILE_EXTENSIONS.has(extension)) return { error: `${name} uses an unsupported file format` };
+  const dataMime = part.fileData.match(/^data:([^;,]+);base64,/i)?.[1];
+  return { name, mimeType: dataMime || FILE_MIME_BY_EXTENSION[extension] || "text/plain", data: part.fileData };
+}
+
+interface AttachmentPlan {
+  selected: Set<string>;
+  notices: string[];
+}
+
+const ATTACHMENT_RETENTION_MARKER = /<!--\s*codex\\?_attachment\\?_retention\s*:\s*([^\r\n]*?)\s*-->/gi;
+const ATTACHMENT_RETENTION_ID = /^att_[a-f0-9]{16}$/;
+
+function attachmentRetentionId(part: CodexImageContent | CodexFileContent): string {
+  const identity = part.type === "image"
+    ? `image\0${part.imageUrl}`
+    : `file\0${part.filename ?? ""}\0${part.fileId ?? ""}\0${part.fileData ?? ""}`;
+  return `att_${createHash("sha256").update(identity).digest("hex").slice(0, 16)}`;
+}
+
+function latestAttachmentRetention(messages: readonly CodexMessage[]): Set<string> | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== "assistant") continue;
+    const text = message.content
+      .filter(part => part.type === "text")
+      .map(part => part.type === "text" ? part.text : "")
+      .join("\n");
+    const matches = [...text.matchAll(ATTACHMENT_RETENTION_MARKER)];
+    const encoded = matches.at(-1)?.[1]?.replace(/\\([_\[\]"])/g, "$1");
+    if (!encoded) continue;
+    try {
+      const parsed = JSON.parse(encoded);
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(parsed
+        .filter((value): value is string => typeof value === "string" && ATTACHMENT_RETENTION_ID.test(value))
+        .slice(0, CHATGPT_MAX_HISTORY_ATTACHMENTS));
+    } catch {
+      return new Set();
+    }
+  }
+  return undefined;
+}
+
+function contentTextForSelection(content: string | CodexContentPart[]): string {
+  if (typeof content === "string") return content;
+  return content.filter(part => part.type === "text").map(part => part.text).join(" ");
+}
+
+function relevanceTerms(text: string): Set<string> {
+  const terms = new Set<string>();
+  for (const token of text.toLowerCase().match(/[a-z0-9_]{2,}|[\p{Script=Han}]{2,}/gu) ?? []) {
+    terms.add(token);
+    if (/^[\p{Script=Han}]+$/u.test(token)) {
+      for (let index = 0; index + 1 < token.length; index += 1) terms.add(token.slice(index, index + 2));
+    }
+  }
+  return terms;
+}
+
+function attachmentPlan(
+  messages: readonly CodexMessage[],
+  compaction = false,
+  generatedAttachmentReserve = 0,
+): AttachmentPlan {
+  const latestUser = messages.findLastIndex(message => message.role === "user");
+  const latestUserMessage = latestUser >= 0 && messages[latestUser]!.role === "user"
+    ? messages[latestUser] : undefined;
+  const query = latestUserMessage ? relevanceTerms(contentTextForSelection(latestUserMessage.content)) : new Set<string>();
+  const retainedByModel = latestAttachmentRetention(messages);
+  const current: Array<{ key: string; retentionId: string }> = [];
+  const history: Array<{ key: string; retentionId: string; score: number }> = [];
+  const notices: string[] = [];
+  let hasLongText = false;
+  messages.forEach((message, messageIndex) => {
+    if (message.role === "assistant") return;
+    const content: CodexContentPart[] = typeof message.content === "string"
+      ? [{ type: "text" as const, text: message.content }]
+      : message.content;
+    const surrounding = contentTextForSelection(content);
+    const terms = relevanceTerms(surrounding);
+    const overlap = [...terms].filter(term => query.has(term)).length;
+    content.forEach((part, partIndex) => {
+      if (part.type === "text") {
+        if (part.text.length >= CHATGPT_LONG_TEXT_ATTACHMENT_CHARS && message.role !== "developer") hasLongText = true;
+        return;
+      }
+      if (part.type === "image" && isOnePixelPngDataUrl(part.imageUrl)) return;
+      if (part.type === "file") {
+        const upload = fileUpload(part);
+        if ("error" in upload) {
+          notices.push(`Skipped attachment: ${upload.error}.`);
+          return;
+        }
+      }
+      const candidate = { key: `${messageIndex}:${partIndex}`, retentionId: attachmentRetentionId(part) };
+      if (messageIndex >= latestUser) current.push(candidate);
+      else history.push({ ...candidate, score: overlap * 1000 + messageIndex });
+    });
+  });
+  const reserve = Math.max(generatedAttachmentReserve, hasLongText ? 1 : 0);
+  // A compaction turn is the one deliberate exception to normal Plus quota
+  // conservation: it summarizes the complete retained context, so preserve
+  // the newest ten images/files that can actually be sent to ChatGPT.
+  if (compaction) {
+    const retained = [...current, ...history]
+      .sort((left, right) => {
+        const leftIndex = Number(left.key.split(":", 1)[0]);
+        const rightIndex = Number(right.key.split(":", 1)[0]);
+        return leftIndex - rightIndex || left.key.localeCompare(right.key);
+      })
+      .slice(-Math.max(0, CHATGPT_MAX_INPUT_IMAGES - reserve));
+    if (retained.length < current.length + history.length) {
+      notices.push(`Skipped ${current.length + history.length - retained.length} older attachment(s) above the conservative ${CHATGPT_MAX_INPUT_IMAGES}-attachment hard limit.`);
+    }
+    return { selected: new Set(retained.map(candidate => candidate.key)), notices };
+  }
+  const currentAccepted = current.slice(-Math.max(0, CHATGPT_MAX_INPUT_IMAGES - reserve));
+  if (currentAccepted.length < current.length) {
+    notices.push(`Skipped ${current.length - currentAccepted.length} current attachment(s) above the conservative ${CHATGPT_MAX_INPUT_IMAGES}-attachment hard limit.`);
+  }
+  const available = Math.max(0, CHATGPT_MAX_INPUT_IMAGES - reserve - currentAccepted.length);
+  // When a turn contains one active image and an overflowing chronological image history, the
+  // useful interpretation is the newest ten-image window. Keeping only four historical images
+  // drops otherwise adjacent visual context and made long image tasks appear to lose their recent
+  // steps. The explicit retention manifest still wins on later turns.
+  const target = retainedByModel === undefined
+    && currentAccepted.length <= 1
+    && current.length + history.length > CHATGPT_MAX_INPUT_IMAGES
+    ? available
+    : currentAccepted.length >= 4
+      ? CHATGPT_MIN_HISTORY_ATTACHMENTS
+      : currentAccepted.length >= 2 ? 3 : CHATGPT_MAX_HISTORY_ATTACHMENTS;
+  const selectedHistory = retainedByModel === undefined
+    ? history.sort((left, right) => right.score - left.score).slice(0, Math.min(target, available))
+    : history
+      .filter(candidate => retainedByModel.has(candidate.retentionId))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, Math.min(CHATGPT_MAX_HISTORY_ATTACHMENTS, available));
+  if (history.length > selectedHistory.length) {
+    notices.push(retainedByModel === undefined
+      ? `Conserved Plus upload quota by omitting ${history.length - selectedHistory.length} older attachment(s); ${selectedHistory.length} text-relevant historical attachment(s) were uploaded.`
+      : `Followed the previous model retention decision: omitted ${history.length - selectedHistory.length} older attachment(s) and uploaded ${selectedHistory.length} retained historical attachment(s).`);
+  }
+  return { selected: new Set([...currentAccepted, ...selectedHistory].map(candidate => candidate.key)), notices };
+}
 
 /**
  * ChatGPT's current `/backend-api/f/conversation` edge rejects large inline JSON bodies before a
@@ -174,6 +383,8 @@ export function chatGptPromptJsonBytes(text: string): number {
 
 const DROPPED_IMAGE_NOTE =
   `[older image not attached: ChatGPT accepts at most ${CHATGPT_MAX_INPUT_IMAGES} per message]`;
+const DROPPED_FILE_NOTE =
+  `[older file not attached: ChatGPT accepts at most ${CHATGPT_MAX_INPUT_IMAGES} attachments per message]`;
 
 /**
  * A fresh compaction epoch receives the complete canonical context, so every still-relevant image
@@ -182,30 +393,61 @@ const DROPPED_IMAGE_NOTE =
  * limit still drops overflow from the oldest end so the images the task is actively working on
  * survive.
  */
-interface ImageBudget {
-  seen: number;
-  dropped: number;
+interface PromptAttachmentState {
+  plan: AttachmentPlan;
+  images: ChatGptWebPromptImage[];
+  files: ChatGptWebPromptFile[];
+  longTexts: Array<{ section: number; text: string }>;
+  messageIndex: number;
+  allowLongTextAttachment: boolean;
 }
 
 function inputContent(
   content: string | CodexContentPart[],
-  images: ChatGptWebPromptImage[],
-  budget: ImageBudget,
+  state: PromptAttachmentState,
 ): unknown {
-  if (typeof content === "string") return content;
-  const semantic = content.filter(part =>
-    part.type !== "image" || !isOnePixelPngDataUrl(part.imageUrl)
-  );
-  if (!semantic.some(part => part.type === "image")) {
-    return semantic.filter(part => part.type === "text").map(part => part.text).join("\n");
+  const externalizeText = (text: string): unknown => {
+    if (!state.allowLongTextAttachment || text.length < CHATGPT_LONG_TEXT_ATTACHMENT_CHARS) return text;
+    const section = state.longTexts.length + 1;
+    state.longTexts.push({ section, text });
+    return { type: "text_attachment", attachment_ref: LONG_TEXT_REF, section, characters: text.length };
+  };
+  if (typeof content === "string") return externalizeText(content);
+  const semantic = content.filter(part => part.type !== "image" || !isOnePixelPngDataUrl(part.imageUrl));
+  if (semantic.every(part => part.type === "text")) {
+    const text = semantic.map(part => part.type === "text" ? part.text : "").join("\n");
+    return externalizeText(text);
   }
-  return semantic.map(part => {
-    if (part.type === "text") return { type: "text", text: part.text };
-    budget.seen += 1;
-    if (budget.seen <= budget.dropped) return { type: "text", text: DROPPED_IMAGE_NOTE };
-    const ref = `codex-input-image-${images.length + 1}`;
-    images.push({ ref, imageUrl: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
-    return { type: "image_attachment", attachment_ref: ref, ...(part.detail ? { detail: part.detail } : {}) };
+  return content.flatMap((part, partIndex) => {
+    if (part.type === "image" && isOnePixelPngDataUrl(part.imageUrl)) return [];
+    if (part.type === "text") {
+      const text = externalizeText(part.text);
+      return typeof text === "string" ? { type: "text", text } : text;
+    }
+    const key = `${state.messageIndex}:${partIndex}`;
+    if (!state.plan.selected.has(key)) {
+      return { type: "text", text: part.type === "file" ? DROPPED_FILE_NOTE : DROPPED_IMAGE_NOTE };
+    }
+    if (part.type === "file") {
+      const upload = fileUpload(part);
+      if ("error" in upload) return { type: "text", text: `[file not uploaded: ${upload.error}]` };
+      const ref = `codex-input-file-${state.files.length + 1}`;
+      state.files.push({ ref, ...upload });
+      return {
+        type: "file_attachment",
+        attachment_ref: ref,
+        retention_id: attachmentRetentionId(part),
+        filename: upload.name,
+      };
+    }
+    const ref = `codex-input-image-${state.images.length + 1}`;
+    state.images.push({ ref, imageUrl: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
+    return {
+      type: "image_attachment",
+      attachment_ref: ref,
+      retention_id: attachmentRetentionId(part),
+      ...(part.detail ? { detail: part.detail } : {}),
+    };
   });
 }
 
@@ -278,8 +520,7 @@ export function withoutSupersededModelSwitchContracts(messages: readonly CodexMe
 
 function messageEnvelope(
   message: CodexMessage,
-  images: ChatGptWebPromptImage[],
-  budget: ImageBudget,
+  state: PromptAttachmentState,
 ): Record<string, unknown> {
   if (message.role === "toolResult") {
     return {
@@ -288,7 +529,7 @@ function messageEnvelope(
       tool_name: message.toolName,
       ...(message.toolNamespace ? { tool_namespace: message.toolNamespace } : {}),
       is_error: message.isError,
-      content: inputContent(message.content, images, budget),
+      content: inputContent(message.content, state),
     };
   }
   if (message.role === "agentMessage") {
@@ -296,7 +537,7 @@ function messageEnvelope(
       role: "agent_message",
       ...(message.author !== undefined ? { author: message.author } : {}),
       ...(message.recipient !== undefined ? { recipient: message.recipient } : {}),
-      content: inputContent(message.content, images, budget),
+      content: inputContent(message.content, state),
     };
   }
   if (message.role === "assistant") {
@@ -306,7 +547,7 @@ function messageEnvelope(
       content: assistantContent(message.content),
     };
   }
-  return { role: message.role, content: inputContent(message.content, images, budget) };
+  return { role: message.role, content: inputContent(message.content, state) };
 }
 
 type MultipartContextRecord =
@@ -578,13 +819,67 @@ export function compileChatGptWebPrompt(
       "The task context is complete. Execute the latest active user request now under the capability contract above.",
       "</codex_transport_resume>",
     ];
-  const build = (sourceMessages: readonly CodexMessage[]): CompiledChatGptWebPrompt => {
+  const build = (
+    sourceMessages: readonly CodexMessage[],
+    contextAttachment = false,
+    omittedMessages = 0,
+  ): CompiledChatGptWebPrompt => {
+    const plan = attachmentPlan(
+      sourceMessages,
+      parsed._compactionRequest === true,
+      contextAttachment ? 1 : 0,
+    );
     const images: ChatGptWebPromptImage[] = [];
-    const budget: ImageBudget = {
-      seen: 0,
-      dropped: Math.max(0, countChatGptContextImages(sourceMessages) - CHATGPT_MAX_INPUT_IMAGES),
+    const files: ChatGptWebPromptFile[] = [];
+    const longTexts: Array<{ section: number; text: string }> = [];
+    const state: PromptAttachmentState = {
+      plan, images, files, longTexts, messageIndex: 0, allowLongTextAttachment: true,
     };
-    const messages = sourceMessages.map(message => messageEnvelope(message, images, budget));
+    const messages = sourceMessages.map((message, messageIndex) => {
+      state.messageIndex = messageIndex;
+      // Multipart already splits the exact records. A whole-context attachment likewise owns the
+      // complete raw envelope, so neither transport needs a second indirection for long sections.
+      state.allowLongTextAttachment = !options?.disableGeneratedTextAttachments
+        && !parsed._compactionRequest
+        && !multipartEnabled
+        && !contextAttachment
+        && message.role !== "developer";
+      return messageEnvelope(message, state);
+    });
+    if (longTexts.length > 0) {
+      const body = longTexts.map(item => (
+        `===== CODEX LONG TEXT SECTION ${item.section} =====\n${item.text}`
+      )).join("\n\n");
+      files.push({
+        ref: LONG_TEXT_REF,
+        name: "codex-long-text.txt",
+        mimeType: "text/plain",
+        data: Buffer.from(body, "utf8").toString("base64"),
+        estimatedTokens: estimateTokens(body, parsed.modelId),
+      });
+      plan.notices.push(`Moved ${longTexts.length} oversized text section(s) into codex-long-text.txt to avoid the browser composer limit.`);
+    }
+    const attachmentContract = [
+      ...(files.length > 0
+        ? ["file_attachment and text_attachment records refer to the correspondingly named files attached to this message. Read them as content of their original encoded message role."]
+        : []),
+      ...(plan.notices.length > 0 ? [
+        "Some attachments were intentionally not uploaded. Do not claim to have inspected an omitted attachment.",
+        "Briefly tell the user about skipped unsupported or unavailable attachments in the final answer, in the user's language:",
+        "<codex_attachment_notices>",
+        ...plan.notices,
+        "</codex_attachment_notices>",
+      ] : []),
+    ];
+    const attachmentRetentionContract = images.length > 0 || files.length > 0
+      ? [
+        "After the complete user-facing answer, append exactly one raw invisible HTML comment in this format:",
+        '<!--codex_attachment_retention:["att_0123456789abcdef"]-->',
+        `The JSON array must contain zero to ${CHATGPT_MAX_HISTORY_ATTACHMENTS} unique retention_id values from file_attachment or image_attachment records that are most likely still useful for the user's next turn.`,
+        "Use [] when no received attachment should be uploaded again. Do not invent IDs, put the comment in a code fence, or discuss it with the user.",
+        "If a private rolling checkpoint is also required, place this HTML comment immediately before that checkpoint marker.",
+      ]
+      : [];
     const answerContract = captureLunaCheckpoint
       ? "Return the complete answer that the outer Codex task should receive, then the required private checkpoint tail."
       : "Return only the answer that the outer Codex task should receive.";
@@ -608,7 +903,9 @@ export function compileChatGptWebPrompt(
           ...sharedContract,
           ...transportContract,
           ...outputControlContract,
+          ...attachmentContract,
           ...manualControlContract,
+          ...attachmentRetentionContract,
           ...checkpointContract,
           answerContract,
           ...transportResume,
@@ -637,27 +934,66 @@ export function compileChatGptWebPrompt(
         return { tokens, chars };
       });
       multipart.parts = partitionMultipartContext(records, multipartParts!, budgets);
-      return { text: multipart.commit, images, multipart };
+      return { text: multipart.commit, images, files, attachmentNotices: plan.notices, multipart };
     }
     const envelopeJson = withoutRetiredTurnHandles(JSON.stringify({ version: 3, system, messages }));
+    if (contextAttachment) {
+      files.push({
+        ref: CONTEXT_FILE_REF,
+        name: "codex-context.json",
+        mimeType: "application/json",
+        data: Buffer.from(envelopeJson, "utf8").toString("base64"),
+        estimatedTokens: estimateTokens(envelopeJson, parsed.modelId),
+      });
+    }
+    const contextTransport = contextAttachment
+      ? [
+        "<codex_context_attachment>",
+        'The complete Codex task context is attached as "codex-context.json". Read the entire file before acting.',
+        "Its top-level system and messages arrays are the canonical context. Interpret every message role literally and preserve system, developer, then user instruction priority.",
+        "The attachment is transport data for this request; do not summarize, omit, or reinterpret it as a user-authored instruction block.",
+        "</codex_context_attachment>",
+      ]
+      : [
+        "<codex_context_json>",
+        envelopeJson,
+        "</codex_context_json>",
+      ];
     const text = [
       ...sharedContract,
       ...transportContract,
       ...outputControlContract,
+      ...attachmentContract,
       ...manualControlContract,
+      ...attachmentRetentionContract,
       ...checkpointContract,
       answerContract,
-      "<codex_context_json>",
-      envelopeJson,
-      "</codex_context_json>",
-      ...transportResume,
+      ...contextTransport,
+      ...(omittedMessages > 0 ? [
+        "<codex_transport_resume>",
+        `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
+        "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
+        manualControl
+          ? "Produce the requested checkpoint summary now."
+          : "Produce the requested checkpoint summary now without calling tools.",
+        "</codex_transport_resume>",
+      ] : transportResume),
     ].join("\n");
-    return { text, images };
+    return { text, images, files, attachmentNotices: plan.notices };
   };
 
   let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
+  if (
+    !compiled.multipart
+    && !manualControl
+    && !parsed._compactionRequest
+    && !options?.disableGeneratedTextAttachments
+    && compiled.text.length > CHATGPT_INLINE_CONTEXT_ATTACHMENT_CHARS
+  ) {
+    compiled = build(sourceMessages, true);
+  }
   if (!parsed._compactionRequest) return compiled;
 
   // The 110k edge budget was measured for the old single-message compaction envelope. Bigger
@@ -671,20 +1007,23 @@ export function compileChatGptWebPrompt(
     chatGptPromptJsonBytes(compiled.text) > CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET
   );
 
-  // Match native Codex compaction recovery: discard oldest history items one at a time until the
-  // summarization request fits. Never discard the final compaction instruction itself, and rebuild
-  // image references after every trim so removed messages cannot leave orphaned attachments.
-  while (
-    exceedsCompactionBudget()
-    && sourceMessages.length > 1
-  ) {
-    sourceMessages = sourceMessages.slice(1);
-    compiled = build(sourceMessages);
+  // A cumulative checkpoint may be the only remaining account of earlier work. Preserve the
+  // newest one and the final compaction instruction; trim other history in its original order.
+  let checkpointIndex = sourceMessages.findLastIndex(message =>
+    message.role === "user" && isReadableCompactionSummaryText(plainMessageText(message))
+  );
+  while (exceedsCompactionBudget() && sourceMessages.length > 1) {
+    const discardIndex = checkpointIndex === 0 ? 1 : 0;
+    if (discardIndex === sourceMessages.length - 1) break;
+    sourceMessages.splice(discardIndex, 1);
+    if (checkpointIndex > discardIndex) checkpointIndex -= 1;
+    // Rebuild image references and count the omission notice inside the same byte budget.
+    compiled = build(sourceMessages, false, initialMessageCount - sourceMessages.length);
   }
   const encodedBytes = chatGptPromptJsonBytes(compiled.text);
   if (exceedsCompactionBudget()) {
     throw new Error(
-      `ChatGPT Web compaction prompt still requires ${encodedBytes.toLocaleString("en-US")} JSON bytes after all older history was trimmed; the final compaction instruction alone exceeds the browser compaction budget`,
+      `ChatGPT Web compaction prompt still requires ${encodedBytes.toLocaleString("en-US")} JSON bytes after other history was trimmed; ${checkpointIndex >= 0 ? "the cumulative checkpoint and final compaction instruction exceed" : "the final compaction instruction alone exceeds"} the browser compaction budget`,
     );
   }
   const trimmedCompactionMessages = initialMessageCount - sourceMessages.length;

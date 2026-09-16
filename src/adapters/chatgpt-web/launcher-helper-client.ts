@@ -526,6 +526,8 @@ export class LauncherBrowserHelperClient {
               prepared: {
                 text: prepared.text,
                 images: prepared.images,
+                ...(prepared.files ? { files: prepared.files } : {}),
+                ...(prepared.attachmentNotices ? { attachmentNotices: prepared.attachmentNotices } : {}),
                 ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }

@@ -90,8 +90,16 @@ export interface CodexImageContent {
   detail?: string;
 }
 
+export interface CodexFileContent {
+  type: "file";
+  filename?: string;
+  fileId?: string;
+  /** Inline base64 or data URL supplied by the Responses input_file block. */
+  fileData?: string;
+}
+
 /** A user/developer message content part: text or an image (vision). */
-export type CodexContentPart = CodexTextContent | CodexImageContent;
+export type CodexContentPart = CodexTextContent | CodexImageContent | CodexFileContent;
 
 export interface CodexThinkingContent {
   type: "thinking";
@@ -298,6 +306,7 @@ export interface CodexProviderConfig {
     /** Account capability proven by the authenticated browser probe. */
     solAvailable?: boolean;
     /** Account capability proven by the authenticated browser probe. */
+    extraHighAvailable?: boolean;
     proAvailable?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */
     autoApproveToolCalls?: boolean;

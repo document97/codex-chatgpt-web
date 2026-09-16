@@ -251,6 +251,12 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
       throw new Error(`Runtime configuration has an invalid ${key}`);
     }
   }
+  if (config.extraHighAvailable !== undefined && typeof config.extraHighAvailable !== "boolean") {
+    throw new Error("Runtime configuration has an invalid extraHighAvailable");
+  }
+  if (config.extraHighAvailable === true && !config.solAvailable) {
+    throw new Error("Runtime configuration cannot enable Extra High without Sol");
+  }
   if (config.experimentalBiggerContext !== undefined
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
@@ -478,31 +484,53 @@ class RuntimeSupervisor {
   }
 
   spawnChild(name, invocation) {
-    const child = spawn(invocation.executable, invocation.args, {
-      cwd: invocation.cwd,
-      detached: DETACH_OWNED_CHILD,
-      env: {
-        ...process.env,
-        CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    // A Windows console close tears down inherited console process groups and streams together.
+    // Keep the daemon's output independent so it can survive the launcher long enough to provide
+    // native Codex passthrough. The launcher still owns and explicitly terminates it during normal
+    // setup/restart operations.
+    const persistentDaemonLog = name === "daemon" && process.platform === "win32";
+    let daemonLogFd = null;
+    let child;
+    try {
+      if (persistentDaemonLog) {
+        const logDirectory = path.join(this.coreHome, "logs");
+        fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+        daemonLogFd = fs.openSync(path.join(logDirectory, "responses-daemon.log"), "a", 0o600);
+      }
+      child = spawn(invocation.executable, invocation.args, {
+        cwd: invocation.cwd,
+        detached: name === "daemon" || DETACH_OWNED_CHILD,
+        env: {
+          ...process.env,
+          CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
+        },
+        stdio: persistentDaemonLog
+          ? ["ignore", daemonLogFd, daemonLogFd]
+          : ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } finally {
+      if (daemonLogFd !== null) fs.closeSync(daemonLogFd);
+    }
     this[name] = child;
     this.lastChildFailure[name] = null;
     this.lastChildOutput[name] = null;
-    collectLines(child.stdout, (line) => {
-      this.lastChildOutput[name] = redactText(line).slice(0, 1_000);
-      this.logger.info(`runtime.${name}_stdout`, { line });
-    }, (error) => {
-      this.logger.warn(`runtime.${name}_stdout_unavailable`, { message: errorMessage(error) });
-    });
-    collectLines(child.stderr, (line) => {
-      this.lastChildOutput[name] = redactText(line).slice(0, 1_000);
-      this.logger.warn(`runtime.${name}_stderr`, { line });
-    }, (error) => {
-      this.logger.warn(`runtime.${name}_stderr_unavailable`, { message: errorMessage(error) });
-    });
+    if (child.stdout) {
+      collectLines(child.stdout, (line) => {
+        this.lastChildOutput[name] = redactText(line).slice(0, 1_000);
+        this.logger.info(`runtime.${name}_stdout`, { line });
+      }, (error) => {
+        this.logger.warn(`runtime.${name}_stdout_unavailable`, { message: errorMessage(error) });
+      });
+    }
+    if (child.stderr) {
+      collectLines(child.stderr, (line) => {
+        this.lastChildOutput[name] = redactText(line).slice(0, 1_000);
+        this.logger.warn(`runtime.${name}_stderr`, { line });
+      }, (error) => {
+        this.logger.warn(`runtime.${name}_stderr_unavailable`, { message: errorMessage(error) });
+      });
+    }
     let terminalHandled = false;
     const handleTerminal = ({ code = null, signal = null, error = null }) => {
       if (terminalHandled) return;
@@ -781,7 +809,7 @@ class RuntimeSupervisor {
     if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
     const result = await this.runTunnelCommand(
       config,
-      ["runtimes", "status", tunnel.alias, "--json"],
+      ["runtimes", "list", "--json"],
       5_000,
       "Local tunnel health discovery",
     );
@@ -794,13 +822,16 @@ class RuntimeSupervisor {
     } catch (error) {
       throw new Error(`Local tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
     }
-    const candidates = [
-      parsed?.local?.effective_health?.base_url,
-      parsed?.local?.health?.base_url,
-      parsed?.health_url,
-      parsed?.ui_url,
-    ];
-    const baseUrl = candidates.map(loopbackHealthBaseURL).find(Boolean);
+    // Unscoped `list` is local-only. Its exact alias record points to the live health URL file;
+    // `status` waits for an unrelated remote API before returning this same local information.
+    const aliases = Array.isArray(parsed?.aliases)
+      ? parsed.aliases.filter(entry => entry?.alias === tunnel.alias)
+      : [];
+    const healthFile = aliases.length === 1 ? aliases[0].health_url_file : undefined;
+    if (typeof healthFile !== "string" || !path.isAbsolute(healthFile)) {
+      throw new Error("Local tunnel health discovery returned no unique alias health URL file");
+    }
+    const baseUrl = loopbackHealthBaseURL(await fs.promises.readFile(healthFile, "utf8"));
     if (!baseUrl) {
       throw new Error("Local tunnel health discovery returned no verified loopback endpoint");
     }
@@ -1137,7 +1168,7 @@ class RuntimeSupervisor {
     }
     let child;
     try {
-      child = this.spawnChild("daemon", this.runtimeCommand(["serve"]));
+      child = this.spawnChild("daemon", this.runtimeCommand(["serve", "--launcher-pid", String(process.pid)]));
       await this.waitForProxy(config);
       if (this.daemon !== child) throw new Error("Responses proxy exited immediately after becoming healthy");
       this.restartableChildren.add(child);
@@ -1150,6 +1181,44 @@ class RuntimeSupervisor {
       }
       if (cleanupError) {
         throw new Error(appendFailure(errorMessage(error), "daemon startup cleanup failed", cleanupError));
+      }
+      throw error;
+    }
+  }
+
+  async stopLoginNativeFallback(config) {
+    const health = await this.proxyHealthPayload(config);
+    const fallbackRunning = health?.service === "codex-chatgpt-web"
+      && health?.mode === config.mode
+      && health?.version === config.releaseVersion
+      && health?.native_fallback_only === true
+      && Number.isInteger(health?.pid);
+    if (!fallbackRunning) return false;
+
+    this.logger.info("runtime.login_fallback_takeover_started", { pid: health.pid });
+    let drained = false;
+    try {
+      drained = await this.acquireDrain(config);
+      const stopped = await this.control(config, "shutdown");
+      if (stopped.status !== "ok") {
+        throw new Error("Login native fallback did not acknowledge graceful shutdown");
+      }
+      await this.waitForProcessExit("login native fallback", health.pid);
+      await this.waitForPortRelease(config);
+      this.clearState();
+      this.logger.info("runtime.login_fallback_takeover_completed", { pid: health.pid });
+      return true;
+    } catch (error) {
+      if (drained) {
+        try {
+          await this.control(config, "resume");
+        } catch (resumeError) {
+          throw new Error(appendFailure(
+            errorMessage(error),
+            "login native fallback resume compensation failed",
+            resumeError,
+          ));
+        }
       }
       throw error;
     }
@@ -1223,6 +1292,7 @@ class RuntimeSupervisor {
       return { status: "needs-setup", detail };
     }
     if (!this.daemon && !this.tunnel) {
+      await this.stopLoginNativeFallback(config);
       const healthyRuntime = tunnelOnly ? false : await this.proxyHealth(config);
       const ownershipState = this.readState();
       if (healthyRuntime || runtimeOwnershipMayBeLive(ownershipState)) {
@@ -1848,7 +1918,7 @@ class RuntimeSupervisor {
     };
   }
 
-  async cancelBrowserTurn(traceId) {
+  async cancelBrowserTurn(traceId, reason) {
     if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId || "")) throw new Error("Browser turn trace id is invalid");
     const config = this.readConfig();
     const daemon = this.daemon;
@@ -1856,7 +1926,7 @@ class RuntimeSupervisor {
       throw new Error("Launcher-owned runtime is unavailable for browser-turn cancellation");
     }
     const result = await this.control(config, "cancel-turn", {
-      body: { traceId },
+      body: { traceId, ...(reason === undefined ? {} : { reason }) },
       timeoutMs: 15_000,
     });
     if (result.status !== "ok"
@@ -2073,6 +2143,78 @@ class RuntimeSupervisor {
       };
     } finally {
       this.stopping = false;
+    }
+  }
+
+  async handoffNativeFallback(watchedPids, maxLifetimeMs = 24 * 60 * 60_000) {
+    if (!Array.isArray(watchedPids) || watchedPids.length === 0) {
+      throw new Error("Native fallback requires at least one running Codex process");
+    }
+    if (this.startPromise) await this.startPromise;
+    const config = this.readConfig();
+    const daemon = this.daemon;
+    if (!config) return { status: "not-configured" };
+    if (!daemon || daemon.exitCode !== null || daemon.signalCode !== null) {
+      // Quitting with an installed local route and no live passthrough would strand every active
+      // Codex process on a dead port. Keep the launcher open so it can recover the runtime instead.
+      throw new Error("Responses proxy is unavailable; refusing to quit while Codex is still running");
+    }
+
+    this.stopping = true;
+    this.stopTunnelMonitor();
+    for (const name of ["daemon", "tunnel"]) {
+      if (this.restartTimers[name]) {
+        clearTimeout(this.restartTimers[name]);
+        this.restartTimers[name] = null;
+      }
+    }
+    let tunnelStopped = false;
+    try {
+      // Do not cancel active HTTP turns here. Native Codex responses and remote compaction can
+      // finish through the same daemon while it switches to fallback-only mode. Web-backed turns
+      // are closed by enterNativeFallback because their browser owner is exiting.
+      if (this.tunnel) {
+        await this.stopTunnelGracefully(config);
+        tunnelStopped = true;
+      }
+      const fallback = await this.control(config, "native-fallback", {
+        body: { watchedPids, maxLifetimeMs },
+        timeoutMs: 15_000,
+      });
+      if (fallback.status !== "ok" || fallback.native_fallback_only !== true) {
+        throw new Error("Responses proxy did not acknowledge native fallback mode");
+      }
+      if (fallback.native_route_restored !== true) {
+        throw new Error("Native passthrough is active, but restoring the Codex configuration has not completed");
+      }
+
+      this.restartableChildren.delete(daemon);
+      this.expectedExits.add(daemon);
+      this.tryWriteState(
+        "native-fallback",
+        `preserving native Codex passthrough for ${watchedPids.length} process(es)`,
+      );
+      daemon.stdout?.destroy();
+      daemon.stderr?.destroy();
+      daemon.unref();
+      this.daemon = null;
+      this.logger.info("runtime.native_fallback_handed_off", {
+        pid: daemon.pid,
+        watchedPids,
+        maxLifetimeMs,
+      });
+      return { status: "native-fallback", daemonPid: daemon.pid, watchedPids };
+    } catch (error) {
+      if (tunnelStopped && config.mode === "full" && !this.tunnel) {
+        try {
+          await this.startTunnel(config);
+        } catch (restartError) {
+          throw new Error(appendFailure(errorMessage(error), "tunnel restart compensation failed", restartError));
+        }
+      }
+      this.stopping = false;
+      this.tryWriteState("ready");
+      throw error;
     }
   }
 

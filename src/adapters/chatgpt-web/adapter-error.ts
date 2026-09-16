@@ -73,3 +73,17 @@ export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapter
     },
   );
 }
+
+export function chatGptAttachmentRejectedError(detail?: string, cause?: unknown): ChatGptWebAdapterError {
+  const suffix = detail?.trim() ? ` ChatGPT reported: ${detail.trim()}` : "";
+  return new ChatGptWebAdapterError(
+    `ChatGPT rejected the attachments.${suffix} The same attachment set will not be retried automatically; reduce or remove attachments and send the turn again.`,
+    {
+      status: 400,
+      errorType: "invalid_request_error",
+      code: "attachment_upload_rejected",
+      retryable: false,
+      cause,
+    },
+  );
+}

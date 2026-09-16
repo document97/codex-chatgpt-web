@@ -1166,9 +1166,9 @@ class RuntimeHost {
       existing.mode === "full" ? "--full" : "--browser-only",
       "--browser-host-descriptor",
       this.browserDescriptorPath,
-      // A release may repair capability detection. Reusing the previous result can
-      // keep eligible models disabled even after the corrected probe is installed.
-      ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: true }),
+      // Runtime upgrades preserve the manually installed model roster. Account capability
+      // discovery runs only from an explicit setup/install action.
+      ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: false }),
       "--acknowledge-unofficial",
       "--restart-service",
     ];

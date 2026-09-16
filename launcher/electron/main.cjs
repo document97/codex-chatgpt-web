@@ -1,3 +1,4 @@
+const languages = require("./languages.json");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -18,6 +19,7 @@ const {
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
+const { setNativeFallbackAutostart } = require("./native-fallback-autostart.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -27,6 +29,7 @@ const {
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
+const { repairCodexSessions } = require("./session-checkpoint-repair.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
@@ -59,6 +62,10 @@ const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNEL
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
 
+const launchEnvironment = {
+  CODEX_CHATGPT_WEB_HOME: process.env.CODEX_CHATGPT_WEB_HOME,
+  CODEX_HOME: process.env.CODEX_HOME,
+};
 process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
 app.setName(LAUNCHER_PROFILE.displayName);
@@ -77,6 +84,7 @@ installProcessDiagnosticGuards({
 let mainWindow = null;
 let mainWindowReadyToShow = false;
 let mainWindowShowRequested = false;
+let startupFailed = false;
 let browserHost = null;
 let runtimeHost = null;
 let browserControl = null;
@@ -90,7 +98,16 @@ let cdpPort = 0;
 let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
+let sessionRefreshTimer = null;
+let sessionCheckpointRepairTimer = null;
 let updateController = null;
+
+function scheduleAutomaticSessionCleanup({ logger, stateStore }, retryDelayMs) {
+  if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer);
+  sessionRefreshTimer = null;
+  // Session cleanup is user initiated. Automatically logging out and clearing the managed
+  // browser profile creates bursts of fresh ChatGPT sessions and can trigger account-risk gates.
+}
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -103,6 +120,53 @@ function findFreePort() {
       server.close((error) => error ? reject(error) : resolve(port));
     });
   });
+}
+
+function runningCodexProcessIds() {
+  if (process.platform !== "win32") return [];
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+  const tasklist = path.join(systemRoot, "System32", "tasklist.exe");
+  const result = spawnSync(tasklist, ["/FI", "IMAGENAME eq Codex.exe", "/FO", "CSV", "/NH"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error("Could not enumerate Codex processes; refusing to stop their possible native passthrough");
+  }
+  return [...new Set(String(result.stdout || "")
+    .split(/\r?\n/)
+    .map(line => /^"Codex\.exe","(\d+)"/i.exec(line)?.[1])
+    .filter(Boolean)
+    .map(Number)
+    .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+}
+
+function scheduleSessionCheckpointRepair({ logger }) {
+  if (process.platform !== "win32" || IS_DEV_PROFILE || sessionCheckpointRepairTimer) return;
+  let absentChecks = 0;
+  const check = () => {
+    let pids;
+    try { pids = runningCodexProcessIds(); }
+    catch (error) {
+      logger.warn("session.checkpoint_repair_process_scan_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (pids.length > 0) { absentChecks = 0; return; }
+    // Require two consecutive empty scans so a normal Codex restart has finished flushing JSONL.
+    if (++absentChecks < 2) return;
+    const repaired = repairCodexSessions(LAUNCHER_PROFILE.codexHome, logger);
+    if (repaired.length > 0) logger.info("session.checkpoint_repaired", {
+      files: repaired.map(item => ({ file: item.file, changed: item.changed, backup: item.backup })),
+    });
+    clearInterval(sessionCheckpointRepairTimer);
+    sessionCheckpointRepairTimer = null;
+  };
+  sessionCheckpointRepairTimer = setInterval(check, 1_000);
+  sessionCheckpointRepairTimer.unref?.();
+  check();
 }
 
 function send(channel, value) {
@@ -191,7 +255,7 @@ function trayImage() {
 }
 
 const NATIVE_COPY = Object.freeze({
-  en: Object.freeze({
+  "en": Object.freeze({
     openLauncher: "Open Codex Web GPT",
     quit: "Quit",
     exportDiagnostics: "Export privacy-safe diagnostics",
@@ -200,6 +264,10 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "Remove Codex Web GPT",
     removeMessage: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
+    retry: "Retry",
+    startupTitle: "Codex Web GPT could not start",
+    startupDetail: "Retry starts the launcher again without changing your saved settings or ChatGPT profile.",
+    startupCleanupFailed: "Startup cleanup failed",
   }),
   "zh-CN": Object.freeze({
     openLauncher: "打开 Codex Web GPT",
@@ -210,8 +278,26 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "移除 Codex Web GPT",
     removeMessage: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
     removeDetail: "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
+    retry: "重试",
+    startupTitle: "Codex Web GPT 无法启动",
+    startupDetail: "重试会重新启动应用，不会更改已保存的设置或 ChatGPT 登录配置。",
+    startupCleanupFailed: "启动清理失败",
   }),
-  ja: Object.freeze({
+  "zh-TW": Object.freeze({
+    openLauncher: "開啟 Codex Web GPT",
+    quit: "結束",
+    exportDiagnostics: "匯出隱私安全診斷",
+    cancel: "取消",
+    remove: "移除",
+    removeTitle: "移除 Codex Web GPT",
+    removeMessage: "從 Codex 中移除 ChatGPT Web 模型並還原先前的模型路由？",
+    removeDetail: "啟動器中的 ChatGPT 登入設定檔會保留。Codex 需要重新啟動一次。",
+    retry: "重試",
+    startupTitle: "Codex Web GPT 無法啟動",
+    startupDetail: "重試會重新啟動應用程式，不會變更已儲存的設定或 ChatGPT 登入設定檔。",
+    startupCleanupFailed: "啟動清理失敗",
+  }),
+  "ja": Object.freeze({
     openLauncher: "Codex Web GPT を開く",
     quit: "終了",
     exportDiagnostics: "プライバシー保護済みの診断情報をエクスポート",
@@ -220,6 +306,24 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "Codex Web GPT を削除",
     removeMessage: "Codex から ChatGPT Web モデルを削除し、以前のモデルルートを復元しますか？",
     removeDetail: "ランチャーの ChatGPT ログインプロファイルは保持されます。Codex を一度再起動する必要があります。",
+    retry: "再試行",
+    startupTitle: "Codex Web GPT を起動できませんでした",
+    startupDetail: "保存済みの設定と ChatGPT プロファイルを変更せずに、ランチャーを再起動します。",
+    startupCleanupFailed: "起動後のクリーンアップに失敗しました",
+  }),
+  "ko": Object.freeze({
+    openLauncher: "Codex Web GPT 열기",
+    quit: "종료",
+    exportDiagnostics: "개인정보가 보호된 진단 정보 내보내기",
+    cancel: "취소",
+    remove: "제거",
+    removeTitle: "Codex Web GPT 제거",
+    removeMessage: "Codex에서 ChatGPT Web 모델을 제거하고 이전 모델 경로를 복원할까요?",
+    removeDetail: "런처의 ChatGPT 로그인 프로필은 유지됩니다. Codex를 한 번 다시 시작해야 합니다.",
+    retry: "다시 시도",
+    startupTitle: "Codex Web GPT를 시작할 수 없습니다",
+    startupDetail: "저장된 설정이나 ChatGPT 프로필을 변경하지 않고 런처를 다시 시작합니다.",
+    startupCleanupFailed: "시작 정리에 실패했습니다",
   }),
 });
 
@@ -257,7 +361,7 @@ function showMainWindow() {
   // has produced anything to show. Preserve that foreground request until the real window reaches
   // `ready-to-show`; otherwise the already-running `--hidden` instance silently consumes it.
   mainWindowShowRequested = true;
-  if (!mainWindowReadyToShow || !mainWindow || mainWindow.isDestroyed()) return;
+  if ((!mainWindowReadyToShow && !startupFailed) || !mainWindow || mainWindow.isDestroyed()) return;
   mainWindowShowRequested = false;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
@@ -395,8 +499,8 @@ async function loadRenderer(window) {
 }
 
 function validateLanguage(value) {
-  if (value !== "en" && value !== "zh-CN" && value !== "ja") {
-    throw new Error("Language must be en, zh-CN, or ja");
+  if (typeof value !== "string" || !Object.hasOwn(languages, value)) {
+    throw new Error(`Language must be one of: ${Object.keys(languages).join(", ")}`);
   }
   return value;
 }
@@ -461,7 +565,6 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:complete-onboarding", (_event, language, rawInteractionMode) => {
     const current = stateStore.read();
-    if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
     if (current.autoStart) setAutostart(app, true);
     const next = stateStore.update({
       language: validateLanguage(language),
@@ -502,6 +605,7 @@ function registerIpc({ logger, stateStore }) {
     if (browser.authenticated) {
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
       send("launcher:state-changed", state);
+      scheduleAutomaticSessionCleanup({ logger, stateStore });
     }
     return browser;
   });
@@ -510,6 +614,7 @@ function registerIpc({ logger, stateStore }) {
     if (browser.authenticated) {
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
       send("launcher:state-changed", state);
+      scheduleAutomaticSessionCleanup({ logger, stateStore });
     }
     return browser;
   });
@@ -518,11 +623,13 @@ function registerIpc({ logger, stateStore }) {
     const browser = await browserHost.logout();
     const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
     send("launcher:state-changed", state);
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
     return { browser, state };
   });
   handle("launcher:session-reminder-dismiss", () => {
     const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
     send("launcher:state-changed", state);
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
     return state;
   });
   handle("launcher:browser-smoke", async () => {
@@ -644,6 +751,9 @@ function registerIpc({ logger, stateStore }) {
     try {
       await runtimeHost.uninstallIntegration();
     } finally {
+      if (!IS_DEV_PROFILE) {
+        setNativeFallbackAutostart(null, CORE_HOME, false);
+      }
       browserHost.writeDescriptor();
     }
     const state = stateStore.update({
@@ -666,6 +776,7 @@ function registerIpc({ logger, stateStore }) {
     if (setupState.browserInteractionMode === "automatic") {
       const browser = await browserHost.probeAuthentication();
       if (!browser.authenticated) {
+        if (browser.status === "error") throw new Error(browser.message);
         throw new Error(
           IS_DEV_PROFILE
             ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
@@ -683,6 +794,13 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    if (!IS_DEV_PROFILE) {
+      setNativeFallbackAutostart(
+        runtimeSupervisor.runtimeCommand(["serve", "--startup-recovery"]),
+        CORE_HOME,
+        true,
+      );
+    }
     stateStore.update({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
@@ -816,6 +934,7 @@ function registerIpc({ logger, stateStore }) {
     });
     send("launcher:state-changed", state);
     send("launcher:browser-state", browserHost.snapshot());
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
     if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
     return { state, credentialsRequired: false, targetMode: mode };
   });
@@ -875,9 +994,29 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
-    await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
-    stopCatalogVerificationMonitor();
+    // Make an explicit tray Quit feel immediate while owned runtime cleanup completes.
     quitting = true;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+    if (!IS_DEV_PROFILE) {
+      const codexPids = runningCodexProcessIds();
+      if (codexPids.length > 0) {
+        // Existing Codex processes still hold the local route. Keep a minimal official-model
+        // passthrough until the last one exits. Handoff restores disk routing immediately.
+        await runtimeSupervisor?.handoffNativeFallback(codexPids);
+      } else {
+        await runtimeHost?.restoreBridgeRoute("launcher-quit-route-restore");
+        await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
+      }
+    } else {
+      await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
+    }
+    stopCatalogVerificationMonitor();
+    if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer);
+    sessionRefreshTimer = null;
     await browserHost?.persistSession();
     browserHost?.destroy();
     await browserControl?.close();
@@ -887,6 +1026,7 @@ async function requestQuit() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     quitting = false;
+    createTray(runtimeSupervisor?.logger || { warn() {} }, "en");
     showMainWindow();
     publishOperation({ name: "launcher-quit", status: "failed", message });
     return { ok: false, message };
@@ -902,8 +1042,8 @@ async function start() {
     return;
   }
   app.on("second-instance", () => showMainWindow());
+  app.on("activate", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
@@ -919,8 +1059,10 @@ async function start() {
     }
     return installedRuntimeRoot;
   };
+  // Validate/materialize the packaged runtime before allocating any browser-facing port. A
+  // partially copied bundle must never leave an apparently live launcher with unusable surfaces.
+  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
   installedRuntimeRoot = runtimeRootProvider();
-
   cdpPort = await findFreePort();
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
@@ -929,6 +1071,25 @@ async function start() {
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
   await app.whenReady();
+
+  // Paint a real window while the full launcher renderer initializes.
+  let bootWindow = null;
+  if (!process.argv.includes("--hidden")) {
+    bootWindow = new BrowserWindow({
+      width: 460,
+      height: 220,
+      resizable: false,
+      show: true,
+      title: LAUNCHER_PROFILE.displayName,
+      icon: APP_ICON_PATH,
+      backgroundColor: "#181818",
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    bootWindow.setMenuBarVisibility(false);
+    await bootWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(
+      '<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#181818;color:#eee;font:15px system-ui;display:grid;place-items:center;height:100vh}.box{text-align:center}small{display:block;color:#aaa;margin-top:10px}</style><div class="box">Codex Web GPT<small>Preparing the automatic browser bridge…</small></div>',
+    )}`);
+  }
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
@@ -968,6 +1129,10 @@ async function start() {
     windowStatePath: path.join(app.getPath("userData"), "window-state.json"),
     startHidden,
   });
+  mainWindow.once("ready-to-show", () => {
+    if (bootWindow && !bootWindow.isDestroyed()) bootWindow.destroy();
+    bootWindow = null;
+  });
   browserControl = await new BrowserControlServer({
     logger,
     getBrowserHost: () => browserHost,
@@ -998,7 +1163,27 @@ async function start() {
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
-  const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
+  const initialRuntime = runtimeHost.runtimeConfigSnapshot();
+  if (!IS_DEV_PROFILE && initialRuntime.configured) {
+    setNativeFallbackAutostart(
+      runtimeSupervisor.runtimeCommand(["serve", "--startup-recovery"]),
+      CORE_HOME,
+      true,
+    );
+  }
+  if (!IS_DEV_PROFILE && !initialRuntime.configured) {
+    stateStore.update({
+      coreSetupComplete: false,
+      codexCatalogVerified: false,
+      mcpRuntimeInstalled: false,
+      mcpSetupComplete: false,
+      mcpGuideStep: 0,
+      codexRestartRequired: false,
+      experimentalBiggerContext: false,
+      zeroRiskProEnabled: false,
+    });
+  }
+  const configuredInteractionMode = initialRuntime.config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
@@ -1008,7 +1193,7 @@ async function start() {
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
     cdpPort,
     control: browserControl.descriptor(),
-    cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
+    cancelTurn: IS_DEV_PROFILE ? undefined : (traceId, reason) => runtimeSupervisor.cancelBrowserTurn(traceId, reason),
     getConnectorName: () => runtimeHost.browserConnectorName(),
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
@@ -1036,6 +1221,7 @@ async function start() {
   });
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
+  scheduleSessionCheckpointRepair({ logger });
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   let startupAuthenticationRefresh = Promise.resolve();
@@ -1046,6 +1232,9 @@ async function start() {
       });
     });
   }
+  void startupAuthenticationRefresh.then(() => {
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
+  });
   await loadRenderer(mainWindow);
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
@@ -1243,7 +1432,6 @@ async function start() {
     publishOperation({ name: "runtime-start", status: "failed", message });
   });
 
-  app.on("activate", () => showMainWindow());
   app.on("before-quit", (event) => {
     if (exitCommitted) return;
     event.preventDefault();
@@ -1253,13 +1441,48 @@ async function start() {
   process.once("SIGTERM", () => { void requestQuit(); });
 }
 
-void start().catch((error) => {
+void start().catch(async (error) => {
+  startupFailed = true;
   const message = error instanceof Error ? error.message : String(error);
   try {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);
   } catch {}
   try {
-    dialog.showErrorBox("Codex Web GPT could not start", message);
-  } catch {}
-  app.exit(1);
+    // Browser bootstrap can fail before the renderer is loaded. Keep the error reachable
+    // through the existing instance, and release browser resources before a user retry.
+    const cleanupErrors = [];
+    try { browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
+    try { await browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
+    if (process.argv.includes("--launcher-smoke-test")) return;
+    await app.whenReady();
+    quitting = true;
+    showMainWindow();
+    const copy = nativeCopyFor(createStateStore(path.join(app.getPath("userData"), "launcher-state.json")).read().language);
+    const options = {
+      type: "error",
+      title: copy.startupTitle,
+      message,
+      detail: [copy.startupDetail,
+        ...cleanupErrors.map(detail => `${copy.startupCleanupFailed}: ${detail}`)].join("\n"),
+      buttons: [copy.retry, copy.quit],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    };
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    if (result.response === 0) {
+      // Internal child commands use the resolved profile. A fresh launcher must instead
+      // resolve the original launch environment, especially for the isolated DEV profile.
+      for (const [key, value] of Object.entries(launchEnvironment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      app.relaunch({ args: process.argv.slice(1).filter(argument => argument !== "--hidden") });
+    }
+  } finally {
+    // A failed dialog or relaunch must not leave a headless single-instance owner behind.
+    app.exit(1);
+  }
 });

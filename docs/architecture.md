@@ -52,9 +52,8 @@ DEV launchers can therefore run at the same time with different ChatGPT accounts
 
 The working-tree adapter attaches to a tab leased only from that DEV launcher. In Full mode the DEV
 launcher owns one persistent, isolated tunnel runtime; a named CLI chat owns only the private turn
-broker attached to that tunnel for the command's lifetime. The distinct `Codex Native2 DEV`
-connector reaches the same MCP server and turn-token contract without requiring any Responses
-daemon or colliding with the production `Codex Native2` connector.
+broker attached to that tunnel for the command's lifetime. The existing `Codex Native2` connector
+reaches the same MCP server and turn-token contract without requiring any Responses daemon.
 
 Only the responsibilities normally owned by native Codex are synthetic: named history storage,
 turn metadata, tool-result execution, context-threshold scheduling, and installation of compacted
@@ -76,8 +75,8 @@ migrates known legacy local configuration to the new name, clears prior verifica
 requires the user to create the new connector. Browser verification accepts the exact new identity,
 reports a specific migration error when only the legacy identity is visible, and never falls back to
 the legacy connector. Future public schema changes require another explicit connector identity.
-Repository DEV mode uses `Codex Native2 DEV` so the same ChatGPT account can keep both production
-and development connectors installed without renaming, refreshing, or deleting either one.
+Repository DEV mode reuses `Codex Native2`, because ChatGPT does not allow the installed connector
+to be renamed and a DEV-suffixed duplicate is unnecessary for this workflow.
 
 ## Browser lifecycle
 

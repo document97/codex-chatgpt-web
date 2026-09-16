@@ -15,7 +15,8 @@ usable.
 - Run its browser smoke test and initialize the DEV profile. Complete MCP setup only when testing
   simulated tool rounds; browser, effort, context-limit, and compaction work in browser-only mode.
   The launcher stores any MCP credentials only in the DEV home and supervises only that isolated
-  tunnel. Create the ChatGPT connector as `Codex Native2 DEV`; keep `Codex Native2` unchanged.
+  tunnel. Reuse the existing ChatGPT connector named `Codex Native2`; it does not need to be
+  renamed or duplicated with a DEV suffix.
 
 Nothing is copied from the normal launcher. The DEV command fails closed if its own launcher,
 browser descriptor, credentials, or connector are not ready. It never falls back to the production
@@ -128,7 +129,7 @@ Luna's later requests still include the accumulated transcript inside the same m
 28,000-token browser transport budget.
 
 Browser-only chats do not advertise outer tools and never claim simulated effects. Full setup keeps
-the launcher-owned DEV tunnel ready so ChatGPT can create and validate `Codex Native2 DEV` before a
+the launcher-owned DEV tunnel ready so ChatGPT can validate `Codex Native2` before a
 CLI chat starts. Each named chat attaches its broker to that tunnel, while every dispatched action
 still returns an explicit simulation receipt.
 

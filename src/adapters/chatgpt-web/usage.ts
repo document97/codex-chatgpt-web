@@ -82,7 +82,13 @@ export function resolveBiggerContextMultipartParts(
   );
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
-    { experimentalMultipartParts: parts },
+    {
+      experimentalMultipartParts: parts,
+      // Bigger Context selection must measure the raw inline envelope. Otherwise the ordinary
+      // attachment fallback makes an oversized prompt appear to fit and prevents multipart from
+      // being selected even though the user explicitly enabled it.
+      disableGeneratedTextAttachments: true,
+    },
   );
   const inline = compile();
   const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);

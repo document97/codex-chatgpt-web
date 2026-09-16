@@ -394,7 +394,8 @@ input.on("line", line => {
   }
   if (message.type === "prepared_selected_ack") {
     const prepared = message.prepared;
-    if (!prepared || typeof prepared.text !== "string" || !Array.isArray(prepared.images)) {
+    if (!prepared || typeof prepared.text !== "string" || !Array.isArray(prepared.images)
+      || (prepared.files !== undefined && !Array.isArray(prepared.files))) {
       writeProtocol({ type: "error", id: message.id, message: "Browser helper prompt selection is invalid" });
       abortControllers.get(message.id)?.abort();
       return;

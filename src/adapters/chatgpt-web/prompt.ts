@@ -53,6 +53,8 @@ export interface CompileChatGptWebPromptOptions {
    * reads or mutates ChatGPT's DOM. Completion is accepted only through the bound Zero Risk MCP tools.
    */
   manualControl?: true;
+  /** Automatic Full mode accepts a terminal answer only through codex_turn_complete. */
+  explicitCompletion?: true;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
@@ -737,12 +739,22 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      ...(!manualControl ? [
+        "The attached Codex Native connector exposes executable tools separately from the task JSON. Missing tool schemas in the conversation text do not establish that tools are unavailable. Use codex_tool_inventory to discover the current tools and their schemas, and codex_tool_call with the returned wire_name for other harness tools; do not invent an interface or ask the user to supply one before checking the attached tools.",
+        "Use codex_exec for commands. If it returns a running session_id, use codex_write_stdin to poll that session until the required command completes, or report a concrete blocker. A running session or a wait timeout is not a completed task. If work is explicitly handed off to run in the background, state the actual handoff and do not claim continued monitoring without an active tool or scheduled mechanism.",
+        ...(options?.explicitCompletion ? [
+          "Ordinary assistant text is progress commentary and cannot finish this Codex turn. After every required action and verification has settled, call codex_turn_complete exactly once with the complete user-facing final answer. Do not call it with a progress report, future plan, or promise to continue.",
+        ] : []),
+      ] : []),
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
+      "Interpret brief follow-ups such as 'continue' or 'do it' in the context of the unfinished authorized task. They do not replace that task with a request for a progress report. When required work remains and tools can proceed, perform the next action in this response instead of ending with a promise or a next-step list. Respect an explicit request to stop, explain only, or wait for user input.",
       "Use actual Codex Native results as evidence for local observations and effects.",
       "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
       "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",
       "Continue using the available tools until the requested work is complete and verified.",
-      "Write the user-facing final answer only after the last required tool result has settled. Do not call another tool after beginning that final answer.",
+      options?.explicitCompletion
+        ? "Prepare the user-facing final answer only after the last required tool result has settled, then return it through codex_turn_complete. Do not call another work tool after submitting completion."
+        : "Write the user-facing final answer only after the last required tool result has settled. Do not call another tool after beginning that final answer.",
     ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,

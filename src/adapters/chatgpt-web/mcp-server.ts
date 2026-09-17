@@ -925,33 +925,31 @@ export async function runChatGptMcpServer(options: {
     },
   );
 
-  if (contract === "safe") {
-    server.registerTool(
-      "codex_turn_complete",
-      {
-        title: "Return the result to Codex",
-        description: "Send the complete answer back to the connected Codex request after its work is finished. For compaction, send the requested compacted summary.",
-        inputSchema: {
-          request_id: turnTokenSchema,
-          final_answer: z.string().min(1).max(5_000_000),
-        },
-        outputSchema: {
-          completed: z.literal(true),
-          duplicate: z.boolean(),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  server.registerTool(
+    "codex_turn_complete",
+    {
+      title: "Return the completed result to Codex",
+      description: "Finish this Codex request only after all requested work and verification are complete. Put the entire user-facing final answer in final_answer. Progress updates and plans must not use this tool.",
+      inputSchema: {
+        ...turnReferenceInput(contract),
+        final_answer: z.string().min(1).max(5_000_000),
       },
-      async ({ request_id, final_answer }, extra) => {
-        console.error(`[chatgpt-web-mcp] codex_turn_complete scope=${requestScopeSummary(extra)}`);
-        const response = await callTurnBroker<{ completed: true; duplicate: boolean }>(options.brokerSocketPath, {
-          method: "safe_complete",
-          token: request_id,
-          finalAnswer: final_answer,
-        }, null, extra.signal);
-        return result(response);
+      outputSchema: {
+        completed: z.literal(true),
+        duplicate: z.boolean(),
       },
-    );
-  }
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => {
+      console.error(`[chatgpt-web-mcp] codex_turn_complete scope=${requestScopeSummary(extra)}`);
+      const response = await callTurnBroker<{ completed: true; duplicate: boolean }>(options.brokerSocketPath, {
+        method: contract === "safe" ? "safe_complete" : "native_complete",
+        token: turnReference(contract, input),
+        finalAnswer: input.final_answer,
+      }, null, extra.signal);
+      return result(response);
+    },
+  );
 
   await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
 }

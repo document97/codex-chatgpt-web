@@ -2270,6 +2270,85 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("automatic Full turns do not accept browser progress until codex_turn_complete", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-explicit-completion-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-explicit-completion-${Date.now()}`,
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        turnTimeoutMs: 30_000,
+        localToolsEnabled: true,
+        explicitCompletion: true,
+        solAvailable: true,
+        extraHighAvailable: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    try {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+        const prepared = await turn.prepare();
+        try {
+          const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+          if (!token) throw new Error("turn token missing from compiled prompt");
+          expect(prepared.text).toContain("call codex_turn_complete exactly once");
+          // Simulate the model's MCP completion arriving before its browser response settles.
+          TurnBroker.forSocket(socketPath).completeTurn(token, "Verified final answer");
+          return "Progress only: I will inspect the next report.";
+        } finally {
+          prepared.release();
+        }
+      };
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event));
+      expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
+        .toBe("Verified final answer");
+      expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+      expect(events.some(event => event.type === "error")).toBeFalse();
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("automatic Full turns surface a missing explicit completion instead of silently finalizing progress", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-h4-explicit-completion-missing-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-explicit-completion-missing-${Date.now()}`,
+      chatgptWeb: {
+        brokerSocketPath: socketPath,
+        turnTimeoutMs: 30_000,
+        localToolsEnabled: true,
+        explicitCompletion: true,
+        solAvailable: true,
+        extraHighAvailable: true,
+        proAvailable: true,
+      },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    try {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+        const prepared = await turn.prepare();
+        try {
+          return "Progress only: the next command is still pending.";
+        } finally {
+          prepared.release();
+        }
+      };
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event));
+      expect(events.filter(event => event.type === "text_delta")).toHaveLength(0);
+      expect(events.at(-1)).toMatchObject({ type: "error", code: "chatgpt_completion_not_confirmed", retryable: false });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("replays an ordinary post-tool final after one retained structured compaction handoff", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-adapter-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {

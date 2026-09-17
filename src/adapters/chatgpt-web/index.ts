@@ -359,6 +359,7 @@ export function createChatGptWebAdapter(
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
   };
+  const explicitCompletionRequired = provider.chatgptWeb?.explicitCompletion === true;
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
   const executionNamespace = chatGptWebExecutionNamespace(provider);
   const retainedLauncherDescriptor = provider.chatgptWeb?.browserHost === "launcher"
@@ -436,6 +437,7 @@ export function createChatGptWebAdapter(
         : undefined;
       return {
         captureLunaCheckpoint,
+        ...(explicitCompletionRequired && !input._compactionRequest ? { explicitCompletion: true as const } : {}),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
           : {}),
@@ -755,7 +757,11 @@ export function createChatGptWebAdapter(
       ...multipartProgressLifecycle,
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
-      onTextDelta: delta => text.push(delta),
+      // With explicit completion, browser text is progress commentary; codex_turn_complete owns
+      // the only terminal answer. Compatibility/test providers retain the legacy DOM final.
+      onTextDelta: delta => {
+        if (!explicitCompletionRequired) text.push(delta);
+      },
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -772,11 +778,34 @@ export function createChatGptWebAdapter(
         token.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    const explicitCompletion = token.promise.then(turnToken => Promise.race([
+      broker.waitForCompletion(turnToken),
+      browserTurn.browser.then(() => {
+        throw new ChatGptWebAdapterError(
+          "ChatGPT ended the response without confirming that the requested Codex work was complete. Retry the task; progress text was not accepted as a final answer.",
+          {
+            status: 502,
+            errorType: "server_error",
+            code: "chatgpt_completion_not_confirmed",
+            retryable: false,
+          },
+        );
+      }),
+    ])).then(answer => {
+      text.push(answer);
+      // Completion is authoritative; the browser no longer needs to render another assistant
+      // message after the connector returns its acknowledgement.
+      browserTurn.cancel();
+      return answer;
+    });
+    const terminalBrowser = explicitCompletionRequired ? explicitCompletion : browserTurn.browser;
+    // Keep the unused branch observed: only one terminal contract owns this runtime.
+    if (!explicitCompletionRequired) void explicitCompletion.catch(() => {});
     return {
       mode: "tools",
       token: token.promise,
       externalProgress,
-      browser: browserTurn.browser,
+      browser: terminalBrowser,
       physicalSettlement: browserTurn.physicalSettlement,
       trace,
       text,

@@ -48,7 +48,16 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.equal(manifest.build.nsis.oneClick, false);
   assert.equal(manifest.build.nsis.perMachine, false);
   assert.equal(manifest.build.nsis.allowElevation, false);
+  assert.equal(manifest.build.nsis.allowToChangeInstallationDirectory, true);
   assert.equal(manifest.build.nsis.runAfterFinish, true);
+  assert.equal(manifest.build.nsis.include, "installer/installer.nsh");
+  assert.deepEqual(manifest.build.nsis.installerLanguages, ["en_US", "zh_CN", "zh_TW", "ja_JP", "ko_KR"]);
+  const installerScript = fs.readFileSync(path.join(launcherRoot, "installer", "installer.nsh"), "utf8");
+  assert.match(installerScript, /Enable startup recovery after an unexpected shutdown/);
+  assert.match(installerScript, /DeleteRegValue/);
+  for (const languageId of [1033, 2052, 1028, 1041, 1042]) {
+    assert.match(installerScript, new RegExp(`CodexWebGptStartupRecovery ${languageId}`));
+  }
   assert.match(manifest.build.nsis.guid, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
 });
 

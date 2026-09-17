@@ -82,6 +82,8 @@ interface TurnChannel {
   activityRevision: number;
   completionCommitted: boolean;
   completionRevision?: number;
+  finalAnswer?: string;
+  completionWaiters: Set<SafeWaiter<string>>;
   retirementWaiters: Set<SafeWaiter<void>>;
   batchTimer?: ReturnType<typeof setTimeout>;
 }
@@ -106,10 +108,12 @@ interface BrokerRequest {
     | "owner_revoke"
     | "owner_safe_wait_start"
     | "owner_safe_wait_completion"
+    | "owner_wait_completion"
     | "owner_request_compaction"
     | "owner_compaction_delivery_count"
     | "safe_start"
     | "safe_complete"
+    | "native_complete"
     | "activity_complete"
     | "submit_compaction_handoff";
   token?: string;
@@ -223,6 +227,7 @@ export interface TurnBrokerOwner {
   completeTool(token: string, callId: string, result: BrokerToolResult): void | Promise<void>;
   waitForSafeStart(token: string, signal?: AbortSignal): Promise<void>;
   waitForSafeCompletion(token: string, signal?: AbortSignal): Promise<string>;
+  waitForCompletion(token: string, signal?: AbortSignal): Promise<string>;
   requestCompaction(token: string, queuedResult: BrokerToolResult): number | Promise<number>;
   compactionDeliveryCount(token: string): number | Promise<number>;
   beginCompletionFence(token: string): number | undefined | Promise<number | undefined>;
@@ -306,6 +311,7 @@ export class TurnBroker implements TurnBrokerOwner {
       completedActivities: new Set(),
       activityRevision: 0,
       completionCommitted: false,
+      completionWaiters: new Set(),
       retirementWaiters: new Set(),
     };
     this.channels.set(token, channel);
@@ -459,6 +465,37 @@ export class TurnBroker implements TurnBrokerOwner {
       `[chatgpt-web] broker trace=${channel.traceId} committed browser completion revision=${revision}`,
     );
     return true;
+  }
+
+  completeTurn(token: string, finalAnswer: string): { completed: true; duplicate: boolean } {
+    this.prune();
+    if (typeof finalAnswer !== "string" || finalAnswer.trim().length === 0) {
+      throw new Error("Codex turn final_answer must not be empty");
+    }
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("turn_token is invalid, expired, or revoked");
+    if (channel.safe) throw new Error("Zero Risk request must use its safe completion contract");
+    if (channel.finalAnswer !== undefined) {
+      if (channel.finalAnswer !== finalAnswer) {
+        throw new Error("Codex turn completion conflicts with the accepted final_answer");
+      }
+      return { completed: true, duplicate: true };
+    }
+    if (channel.invocations.size > 0) {
+      throw new Error(`Codex turn cannot complete with ${channel.invocations.size} pending tool invocation(s)`);
+    }
+    channel.finalAnswer = finalAnswer;
+    this.resolveSafeWaiters(channel.completionWaiters, finalAnswer);
+    return { completed: true, duplicate: false };
+  }
+
+  waitForCompletion(token: string, signal?: AbortSignal): Promise<string> {
+    this.prune();
+    const channel = this.channels.get(token);
+    if (!channel) return Promise.reject(new Error("turn_token is invalid, expired, or revoked"));
+    if (channel.safe) return Promise.reject(new Error("Zero Risk request must use its safe completion contract"));
+    if (channel.finalAnswer !== undefined) return Promise.resolve(channel.finalAnswer);
+    return this.waitForSafeState(channel.completionWaiters, signal, "Codex turn completion wait aborted");
   }
 
   waitForRetirement(token: string, signal?: AbortSignal): Promise<void> {
@@ -617,6 +654,7 @@ export class TurnBroker implements TurnBrokerOwner {
       this.rejectSafeWaiters(channel.safe.startWaiters, reason);
       this.rejectSafeWaiters(channel.safe.completionWaiters, reason);
     }
+    this.rejectSafeWaiters(channel.completionWaiters, reason);
     this.retire(this.retiredTokens, token, channel.traceId);
     this.resolveSafeWaiters(channel.retirementWaiters, undefined);
     this.rejectChannel(channel, reason);
@@ -877,7 +915,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "native_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
@@ -898,6 +936,11 @@ export class TurnBroker implements TurnBrokerOwner {
         channel = this.channels.get(request.token);
       }
       return this.completeSafeTurn(request.token, request.finalAnswer);
+    }
+    if (request.method === "native_complete") {
+      if (!request.token) throw new Error("turn token is required");
+      if (typeof request.finalAnswer !== "string") throw new Error("Codex turn final_answer is required");
+      return this.completeTurn(request.token, request.finalAnswer);
     }
     if (request.method === "submit_compaction_handoff") {
       if (typeof request.token !== "string" || request.token.length === 0) {
@@ -986,6 +1029,10 @@ export class TurnBroker implements TurnBrokerOwner {
     if (request.method === "owner_safe_wait_completion") {
       if (!request.token) throw new Error("turn owner token is required");
       return this.waitForSafeCompletion(request.token, socketSignal).then(finalAnswer => ({ finalAnswer }));
+    }
+    if (request.method === "owner_wait_completion") {
+      if (!request.token) throw new Error("turn owner token is required");
+      return this.waitForCompletion(request.token, socketSignal).then(finalAnswer => ({ finalAnswer }));
     }
     if (request.method === "owner_request_compaction") {
       if (!request.token) throw new Error("turn owner token is required");
@@ -1414,6 +1461,19 @@ export class RemoteTurnBroker implements TurnBrokerOwner {
     );
     if (typeof response.finalAnswer !== "string" || response.finalAnswer.trim().length === 0) {
       throw new Error("DEV Zero Risk turn owner received an invalid completion result");
+    }
+    return response.finalAnswer;
+  }
+
+  async waitForCompletion(token: string, signal?: AbortSignal): Promise<string> {
+    const response = await callTurnBroker<{ finalAnswer?: unknown }>(
+      this.socketPath,
+      { method: "owner_wait_completion", token },
+      null,
+      signal,
+    );
+    if (typeof response.finalAnswer !== "string" || response.finalAnswer.trim().length === 0) {
+      throw new Error("DEV turn owner received an invalid completion result");
     }
     return response.finalAnswer;
   }

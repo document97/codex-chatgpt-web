@@ -75,7 +75,10 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("Write the user-facing final answer only after the last required tool result has settled.");
   expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
-  expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex_tool_inventory|codex\.control\.turn_complete/);
+  expect(transportOnly).toContain("Use codex_tool_inventory to discover the current tools and their schemas");
+  expect(transportOnly).toContain("use codex_write_stdin to poll that session");
+  expect(transportOnly).toContain("instead of ending with a promise or a next-step list");
+  expect(transportOnly).not.toMatch(/codex_apply_patch|codex_view_image|codex\.control\.turn_complete/);
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
   expect(compiled.text).not.toContain("internally compacts this response");
@@ -94,6 +97,18 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
     expect(compiled.text).not.toContain("Do not create, spawn, delegate to, or wait on sub-agents");
     expect(compiled.text).not.toContain("Use non-agent tools directly instead.");
   }
+});
+
+test("automatic Full mode requires an explicit completed answer instead of accepting progress text", () => {
+  const compiled = compileChatGptWebPrompt(
+    request("high"),
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    "turn_12345678901234567890123456789012",
+    { explicitCompletion: true },
+  );
+  expect(compiled.text).toContain("Ordinary assistant text is progress commentary");
+  expect(compiled.text).toContain("call codex_turn_complete exactly once");
+  expect(compiled.text).toContain("Do not call it with a progress report, future plan, or promise to continue");
 });
 
 test("read-only prompts resume without exposing a bind capability", () => {

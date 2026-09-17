@@ -89,9 +89,12 @@
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "include": "installer/installer.nsh",
+      "installerLanguages": ["en_US", "zh_CN", "zh_TW", "ja_JP", "ko_KR"]
     }
   }
 }

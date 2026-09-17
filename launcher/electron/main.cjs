@@ -590,8 +590,6 @@ function registerIpc({ logger, stateStore }) {
     return stateStore.update(patch);
   });
   handle("launcher:complete-onboarding", (_event, language, rawInteractionMode) => {
-    const current = stateStore.read();
-    if (current.autoStart) setAutostart(app, true);
     const next = stateStore.update({
       language: validateLanguage(language),
       browserInteractionMode: validateBrowserInteractionMode(rawInteractionMode),
@@ -820,13 +818,7 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
-    if (!IS_DEV_PROFILE) {
-      setNativeFallbackAutostart(
-        runtimeSupervisor.runtimeCommand(["serve", "--startup-recovery"]),
-        CORE_HOME,
-        true,
-      );
-    }
+    if (!IS_DEV_PROFILE) setNativeFallbackAutostart(null, CORE_HOME, false);
     stateStore.update({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
@@ -1141,7 +1133,9 @@ async function start() {
     && stateStore.read().onboardingComplete
     && autostart.supported
     && stateStore.read().autoStart !== autostart.enabled) {
-    setAutostart(app, stateStore.read().autoStart);
+    // Read the OS state into the UI; do not create or remove a startup item during
+    // launcher startup. Only the explicit settings switch may change it.
+    stateStore.update({ autoStart: autostart.enabled });
   }
   const logger = createLogger({
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
@@ -1191,13 +1185,7 @@ async function start() {
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
   const initialRuntime = runtimeHost.runtimeConfigSnapshot();
-  if (!IS_DEV_PROFILE && initialRuntime.configured) {
-    setNativeFallbackAutostart(
-      runtimeSupervisor.runtimeCommand(["serve", "--startup-recovery"]),
-      CORE_HOME,
-      true,
-    );
-  }
+  if (!IS_DEV_PROFILE) setNativeFallbackAutostart(null, CORE_HOME, false);
   if (!IS_DEV_PROFILE && !initialRuntime.configured) {
     stateStore.update({
       coreSetupComplete: false,

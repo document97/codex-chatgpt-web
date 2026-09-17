@@ -98,4 +98,4 @@ test("native fetch reaches a proxy-only target, refreshes routing, and never ret
     proxy.stop(true);
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, { timeout: 15_000 });

@@ -975,6 +975,7 @@ function registerIpc({ logger, stateStore }) {
     const recordCount = exportSanitizedLogs({
       filePath: logger.filePath,
       destinationPath: result.filePath,
+      textLogPaths: [path.join(CORE_HOME, "logs", "responses-daemon.log")],
     });
     logger.info("launcher.logs_exported", { recordCount });
     return result.filePath;
@@ -1079,7 +1080,11 @@ async function start() {
   };
   // Validate/materialize the packaged runtime before allocating any browser-facing port. A
   // partially copied bundle must never leave an apparently live launcher with unusable surfaces.
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
+  await waitForPackagedRuntimeSource({
+    app,
+    resourcesPath: process.resourcesPath,
+    coreHome: CORE_HOME,
+  });
   installedRuntimeRoot = runtimeRootProvider();
   cdpPort = await findFreePort();
   if (process.platform === "linux") {

@@ -6,14 +6,16 @@ const SUMMARY_PREFIX = "Another language model started to solve this problem and
 
 function localReasoning(value) {
   return value && typeof value === "object" && !Array.isArray(value)
-    && value.type === "reasoning" && typeof value.id === "string"
-    && /^rs_[0-9a-f]{32}$/i.test(value.id)
+    && typeof value.type === "string" && value.type.toLowerCase() === "reasoning"
+    && typeof value.id === "string"
+    && /^rs_[0-9a-f]{32,64}$/i.test(value.id)
     && (value.encrypted_content == null || typeof value.encrypted_content !== "string");
 }
 
 function bridgeReasoning(value) {
   return value && typeof value === "object" && !Array.isArray(value)
-    && value.type === "reasoning" && typeof value.encrypted_content === "string"
+    && typeof value.type === "string" && value.type.toLowerCase() === "reasoning"
+    && typeof value.encrypted_content === "string"
     && value.encrypted_content.startsWith("ocxr1:");
 }
 
@@ -70,12 +72,28 @@ function rewriteKnownItems(record) {
   if (record.type === "response_item") {
     const result = convertItem(payload);
     if (result.changed) { record.payload = result.item; changed += 1; }
+  } else if (record.type === "event_msg" && payload.type === "item_completed") {
+    const result = convertItem(payload.item);
+    if (result.changed) {
+      if (result.item === null) delete payload.item;
+      else payload.item = result.item;
+      changed += 1;
+    }
   } else if (record.type === "compacted") {
     rewrite(payload.replacement_history);
     rewrite(payload.guardian_history);
     rewrite(payload.retained_context);
   }
   return changed;
+}
+
+function preserveLineByteLength(originalBody, serialized) {
+  const originalBytes = Buffer.byteLength(originalBody, "utf8");
+  const serializedBytes = Buffer.byteLength(serialized, "utf8");
+  if (serializedBytes > originalBytes) {
+    throw new Error(`Session repair would expand a JSONL row by ${serializedBytes - originalBytes} bytes; file left unchanged`);
+  }
+  return serialized + " ".repeat(originalBytes - serializedBytes);
 }
 
 function repairSessionFile(file, { backup = true } = {}) {
@@ -89,9 +107,12 @@ function repairSessionFile(file, { backup = true } = {}) {
     const count = rewriteKnownItems(record);
     if (!count) return line;
     changed += count;
-    return JSON.stringify(record) + ending;
+    return preserveLineByteLength(body, JSON.stringify(record)) + ending;
   }).join("");
   if (!changed) return { changed: 0 };
+  if (Buffer.byteLength(lines, "utf8") !== Buffer.byteLength(original, "utf8")) {
+    throw new Error("Session repair changed the rollout byte length; file left unchanged");
+  }
   const suffix = crypto.randomUUID();
   const backupPath = `${file}.before-native-${suffix}.bak`;
   const temporary = `${file}.${suffix}.tmp`;
@@ -133,4 +154,4 @@ function repairCodexSessions(codexHome, logger = console) {
   return repaired;
 }
 
-module.exports = { repairCodexSessions, repairSessionFile, listSessionFiles };
+module.exports = { repairCodexSessions, repairSessionFile, listSessionFiles, preserveLineByteLength };

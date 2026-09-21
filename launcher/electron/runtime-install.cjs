@@ -7,6 +7,7 @@ const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const DEFAULT_SOURCE_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_SOURCE_WAIT_INTERVAL_MS = 50;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const RECEIPT_SCHEMA_VERSION = 1;
 
 function comparePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -183,15 +184,89 @@ function validateRuntimeBundle(runtimeRoot, identity) {
   return inspectRuntimeBundle(runtimeRoot, identity).runtimeRoot;
 }
 
+function fileSha256(file) {
+  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function receiptPathFor(destination) {
+  return `${destination}.verified.json`;
+}
+
+function runtimeMetadataId(runtimeRoot, manifest) {
+  const expected = new Map(manifest.files.map(file => [file.path, file]));
+  const actual = runtimeFilePaths(runtimeRoot);
+  if (actual.length !== expected.size) throw new Error("Runtime bundle file count changed after verification");
+  const digest = createHash("sha256");
+  for (const relativePath of actual) {
+    const record = expected.get(relativePath);
+    if (!record) throw new Error(`Runtime bundle contains an unmanifested file: ${relativePath}`);
+    const metadata = fs.statSync(path.join(runtimeRoot, ...relativePath.split("/")));
+    if (!metadata.isFile() || metadata.size !== record.size) {
+      throw new Error(`Runtime bundle file metadata changed: ${relativePath}`);
+    }
+    digest.update(relativePath);
+    digest.update("\0");
+    digest.update(String(metadata.size));
+    digest.update("\0");
+    digest.update(String(metadata.mtimeMs));
+    digest.update("\0");
+  }
+  return digest.digest("hex");
+}
+
+function writeVerificationReceipt(destination, source, identity, manifest) {
+  const receipt = {
+    schemaVersion: RECEIPT_SCHEMA_VERSION,
+    ...identity,
+    bundleId: manifest.bundleId,
+    sourceManifestSha256: fileSha256(path.join(source, "manifest.json")),
+    installedManifestSha256: fileSha256(path.join(destination, "manifest.json")),
+    installedMetadataId: runtimeMetadataId(destination, manifest),
+  };
+  const receiptPath = receiptPathFor(destination);
+  const temporary = `${receiptPath}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+  renameAtomicFile(temporary, receiptPath);
+}
+
+function verifiedInstalledRuntime({ app, coreHome, resourcesPath }) {
+  if (!app.isPackaged) return null;
+  const identity = { version: app.getVersion(), platform: process.platform, arch: process.arch };
+  const destination = path.join(coreHome, "versions", `${identity.version}-${identity.platform}-${identity.arch}`);
+  try {
+    const source = path.join(resourcesPath, "runtime");
+    const sourceManifest = readRuntimeManifest(source, identity);
+    const installedManifest = readRuntimeManifest(destination, { ...identity, bundleId: sourceManifest.bundleId });
+    const receipt = JSON.parse(fs.readFileSync(receiptPathFor(destination), "utf8"));
+    if (receipt?.schemaVersion !== RECEIPT_SCHEMA_VERSION
+      || receipt.version !== identity.version
+      || receipt.platform !== identity.platform
+      || receipt.arch !== identity.arch
+      || receipt.bundleId !== sourceManifest.bundleId
+      || receipt.sourceManifestSha256 !== fileSha256(path.join(source, "manifest.json"))
+      || receipt.installedManifestSha256 !== fileSha256(path.join(destination, "manifest.json"))
+      || receipt.installedMetadataId !== runtimeMetadataId(destination, installedManifest)) return null;
+    return destination;
+  } catch {
+    return null;
+  }
+}
+
 async function waitForPackagedRuntimeSource({
   app,
   resourcesPath,
+  coreHome,
   timeoutMs = DEFAULT_SOURCE_WAIT_TIMEOUT_MS,
   intervalMs = DEFAULT_SOURCE_WAIT_INTERVAL_MS,
 }) {
   if (!app.isPackaged) return null;
-  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0) {
-    throw new Error("Packaged runtime source wait requires non-negative timeoutMs and positive intervalMs");
+  if (coreHome) {
+    const identity = { version: app.getVersion(), platform: process.platform, arch: process.arch };
+    const destination = path.join(coreHome, "versions", `${identity.version}-${identity.platform}-${identity.arch}`);
+    if (fs.existsSync(receiptPathFor(destination))) {
+      readRuntimeManifest(path.join(resourcesPath, "runtime"), identity);
+      return path.join(resourcesPath, "runtime");
+    }
   }
   const source = path.join(resourcesPath, "runtime");
   const identity = {
@@ -199,6 +274,9 @@ async function waitForPackagedRuntimeSource({
     platform: process.platform,
     arch: process.arch,
   };
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error("Packaged runtime source wait requires non-negative timeoutMs and positive intervalMs");
+  }
   const deadline = Date.now() + timeoutMs;
   let lastError;
   for (;;) {
@@ -217,6 +295,8 @@ async function waitForPackagedRuntimeSource({
 
 function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   if (!app.isPackaged) return null;
+  const verified = verifiedInstalledRuntime({ app, coreHome, resourcesPath });
+  if (verified) return verified;
   const identity = {
     version: app.getVersion(),
     platform: process.platform,
@@ -232,7 +312,9 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   );
   if (fs.existsSync(destination)) {
     try {
-      return validateRuntimeBundle(destination, expectedIdentity);
+      const installed = validateRuntimeBundle(destination, expectedIdentity);
+      writeVerificationReceipt(destination, source, identity, sourceBundle.manifest);
+      return installed;
     } catch {
       // A terminated installer or external cleanup can leave a version directory present but
       // incomplete. Rebuild the launcher-owned bundle transactionally from the signed package.
@@ -285,11 +367,14 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
     }
   }
   try { fs.chmodSync(destination, 0o700); } catch {}
-  return validateRuntimeBundle(destination, expectedIdentity);
+  const installed = validateRuntimeBundle(destination, expectedIdentity);
+  writeVerificationReceipt(destination, source, identity, sourceBundle.manifest);
+  return installed;
 }
 
 module.exports = {
   ensurePackagedRuntime,
+  verifiedInstalledRuntime,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 };

@@ -124,10 +124,20 @@ const environmentXml = `<environment_context>
 const toolCapabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
 const browserOnlyCapabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
 
+/**
+ * These fixtures hand the turn broker a Unix socket under their temp root. macOS puts TMPDIR at
+ * /var/folders/<32 chars>/T, which pushes a descriptive socket name past the 104-byte sun_path
+ * limit, and listen() then fails with nothing but "Failed to listen". Root them somewhere short so
+ * the socket stays bindable, matching the other broker fixtures in this suite.
+ */
+function shortSocketTempRoot(): string {
+  return process.platform === "win32" ? tmpdir() : "/tmp";
+}
+
 function brokerTestEndpoint(name: string): string {
   return process.platform === "win32"
     ? defaultBrokerEndpoint(join(tmpdir(), name), "win32")
-    : join(tmpdir(), `${name}.sock`);
+    : join(shortSocketTempRoot(), `${name}.sock`);
 }
 
 async function invokeAfterBrowserBoundary<T>(

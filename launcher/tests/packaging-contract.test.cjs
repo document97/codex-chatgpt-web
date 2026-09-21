@@ -47,7 +47,7 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.ok(fs.existsSync(path.join(launcherRoot, "assets", "icon.ico")));
   assert.equal(manifest.build.nsis.oneClick, false);
   assert.equal(manifest.build.nsis.perMachine, false);
-  assert.equal(manifest.build.nsis.allowElevation, false);
+  assert.equal(manifest.build.nsis.allowElevation, true);
   assert.equal(manifest.build.nsis.allowToChangeInstallationDirectory, true);
   assert.equal(manifest.build.nsis.runAfterFinish, true);
   assert.equal(manifest.build.nsis.include, "installer/installer.nsh");

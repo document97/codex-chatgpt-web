@@ -577,6 +577,8 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
+      instructionLedgerStatePath: join(getConfigDir(), "runtime", "instruction-ledger.json"),
+      inlineBudgetStatePath: join(getConfigDir(), "runtime", "inline-budget.json"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
       explicitCompletion: config.mode === "full" && config.browserInteractionMode === "automatic",

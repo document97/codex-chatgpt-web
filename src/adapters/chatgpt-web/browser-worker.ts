@@ -893,6 +893,7 @@ export function assertChatGptWebInputWithinLimits(
   effort: ChatGptWebModelMode["effort"],
   capabilities: ChatGptWebCapabilities,
   promptChars?: number,
+  imageTokens = 0,
 ): void {
   if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
@@ -922,9 +923,14 @@ export function assertChatGptWebInputWithinLimits(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  if (browserMessageTokenLimit !== undefined && estimatedMessageTokens > browserMessageTokenLimit) {
+  // Images ride the same measured boundary as inline text: the same text volume was accepted
+  // without images and rejected with ten attached, so the reserve shares the message ceiling.
+  // This preflight is a never-fire invariant — compile-time externalization keeps ordinary turns
+  // below it — and the message names the real remedy when generated attachments were disabled.
+  if (browserMessageTokenLimit !== undefined
+    && estimatedMessageTokens + imageTokens > browserMessageTokenLimit) {
     throw new ChatGptWebAdapterError(
-      `This prompt requires ${estimatedMessageTokens.toLocaleString("en-US")} visible message tokens, which exceeds the measured ${browserMessageTokenLimit.toLocaleString("en-US")}-token ChatGPT browser message boundary for this account and effort. The model context window is ${contextWindow.toLocaleString("en-US")} tokens; run /compact to reduce the next browser message without changing that model window.`,
+      `This prompt requires ${(estimatedMessageTokens + imageTokens).toLocaleString("en-US")} visible message tokens including images, which exceeds the measured ${browserMessageTokenLimit.toLocaleString("en-US")}-token ChatGPT browser message boundary for this account and effort. The model context window is ${contextWindow.toLocaleString("en-US")} tokens; run /compact to reduce the next browser message without changing that model window.`,
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
@@ -1064,7 +1070,11 @@ export const browserStageTimeouts = {
   effortSelection: 120_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
-  send: 20_000,
+  // Evidence for a retained-continuation send rides the same slow DOM as a Bigger Context stage:
+  // a long Temporary Chat (measured at 600k body chars) needs well over 20s for the submission
+  // scan, and the live failure mode was the submission ACCEPTED and generating while this budget
+  // killed the turn. The turn heartbeat still guards the overall liveness.
+  send: 60_000,
   // A Bigger Context stage posts a much larger payload onto a conversation that already holds the
   // earlier parts. This budget covers ChatGPT accepting the submission, not just the click.
   multipartStageSend: 180_000,
@@ -2323,6 +2333,12 @@ export class ChatGptBrowserWorker {
       return value;
     } catch (error) {
       let surfacedError = error;
+      // The stage timeout won the race and already aborted the action. Whichever wait inside the
+      // action rejects last must not surface as an unhandled rejection — Node ≥15 crashes the
+      // process on one, which would kill the browser helper mid-task instead of failing this turn.
+      if (stageTimedOut && actionPromise) {
+        actionPromise.catch(() => undefined);
+      }
       if (stageTimedOut && awaitAbortedActionSettlement && actionPromise) {
         try {
           await actionPromise;
@@ -4485,6 +4501,7 @@ export class ChatGptBrowserWorker {
           requestedMode.effort,
           browserCapabilities,
           maxMessageChars,
+          estimateChatGptWebImageTokens(prepared),
         );
       }
       const deadline = this.config.turnTimeoutMs === undefined

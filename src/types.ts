@@ -290,6 +290,13 @@ export interface CodexProviderConfig {
     threadEnvironmentStatePath?: string;
     /** Persisted exact-parent rolling checkpoints used only by Free/Luna turns. */
     lunaCheckpointStatePath?: string;
+    /**
+     * Persisted record of which user instructions each retained browser conversation already
+     * carried, used to distinguish a Codex resume from an edited resubmit under a new turn_id.
+     */
+    instructionLedgerStatePath?: string;
+    /** Persisted cumulative inline spend per retained browser conversation (composer boundary). */
+    inlineBudgetStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /**

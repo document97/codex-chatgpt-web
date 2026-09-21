@@ -55,6 +55,33 @@ import { stopTunnel } from "./tunnel";
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A model switch can carry the complete transcript while retaining the previous provider's
+ * continuation id. That id is meaningful only to the provider that created it. We can safely
+ * ignore it when the request already contains an earlier assistant/tool item; rejecting that
+ * request would make an otherwise valid native -> Web model switch look like missing context.
+ */
+function hasCompleteHistoryForProviderSwitch(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.input)) return false;
+  return value.input.some(item => {
+    if (!isRecord(item)) return false;
+    const type = typeof item.type === "string" ? item.type.toLowerCase() : "";
+    if (type === "message") return item.role === "assistant";
+    return type === "reasoning"
+      || type === "function_call"
+      || type === "function_call_output"
+      || type === "custom_tool_call"
+      || type === "custom_tool_call_output"
+      || type === "local_shell_call"
+      || type === "web_search_call"
+      || type === "agent_message";
+  });
+}
+
 export interface NativeCodexTurnIdentity {
   threadId: string;
   turnId: string;
@@ -518,7 +545,16 @@ export async function responseRequest(
   const requestedPreviousResponseId = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as { previous_response_id?: unknown }).previous_response_id
     : undefined;
-  const expanded = expandPreviousResponseInput(raw);
+  let expanded = expandPreviousResponseInput(raw);
+  if (typeof requestedPreviousResponseId === "string"
+    && expanded === raw
+    && hasCompleteHistoryForProviderSwitch(raw)) {
+    // The full transcript is already present, so the previous id is only a provider-local
+    // continuation hint. Do not carry an official response id into ChatGPT Web (or vice versa).
+    const replayable = { ...(raw as Record<string, unknown>) };
+    delete replayable.previous_response_id;
+    expanded = replayable;
+  }
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
   try {

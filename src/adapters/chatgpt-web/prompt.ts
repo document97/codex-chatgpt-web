@@ -55,6 +55,12 @@ export interface CompileChatGptWebPromptOptions {
   manualControl?: true;
   /** Automatic Full mode accepts a terminal answer only through codex_turn_complete. */
   explicitCompletion?: true;
+  /**
+   * Inline tokens still available to this browser conversation before ChatGPT's composer
+   * boundary rejects the visible message. Retained continuations pass the conversation's
+   * remaining allowance; when absent, only the per-message boundary applies.
+   */
+  inlineConversationTokenRemaining?: number;
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
@@ -175,7 +181,7 @@ export function withoutRetiredTurnHandles(contextJson: string): string {
 }
 
 /** Conservative hard ceiling for Plus; current-turn attachments always take priority. */
-export const CHATGPT_MAX_INPUT_IMAGES = 10;
+export const CHATGPT_MAX_INPUT_IMAGES = 8;
 export const CHATGPT_LONG_TEXT_ATTACHMENT_CHARS = 80_000;
 /**
  * The browser composer accepts more text than ChatGPT's conversation edge will process. A live
@@ -620,9 +626,10 @@ function partitionMultipartContext(
   records: readonly MultipartContextRecord[],
   totalParts: ChatGptWebMultipartPartCount,
   budgets: readonly MultipartRecordWeight[],
+  weights: readonly MultipartRecordWeight[],
 ): ChatGptWebMultipartParts {
   if (budgets.length !== totalParts) throw new Error("ChatGPT multipart budget count does not match parts");
-  const weights = records.map(multipartRecordWeight);
+  if (weights.length !== records.length) throw new Error("ChatGPT multipart record weights do not match records");
   const boundaries = partitionMultipartRecordWeights(weights, budgets);
   let offset = 0;
   const groups = boundaries.map(end => {
@@ -661,6 +668,19 @@ export function chatGptReadOnlyContextWarning(
   }
   return `> **Local tools unavailable**\n>\n> \`${label}\` cannot access the local Codex computer in this turn. The accumulated context does not contain local tool results yet: it will see instructions and attachments, but not workspace contents. ChatGPT-native capabilities such as web search remain available when the product provides them.${browserOnlyGuidance}`;
 }
+
+// A retained continuation sends only its corrective text, so this is the model's sole cue that a connector exists.
+export const CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT =
+  "The attached Codex Native connector exposes executable tools separately from the task JSON. Missing tool schemas in the conversation text do not establish that tools are unavailable. Use codex_tool_inventory to discover the current tools and their schemas, and codex_tool_call with the returned wire_name for other harness tools; do not invent an interface or ask the user to supply one before checking the attached tools.";
+
+/**
+ * Codex evaluates its automatic compaction only between turns, so a turn that grows past the
+ * window ends in an overflow error instead of a compacted handoff. This instruction replaces the
+ * remaining tool rounds with one resumable summary once the projected context no longer fits a
+ * further round.
+ */
+export const CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION =
+  "Codex's context window for this conversation is nearly exhausted; another tool round would end the task with a context overflow instead of handing it over. Stop requesting tools. Complete only the step whose result is already supplied, then reply with a handoff summary for the next turn: what is finished, what is verified, the exact remaining steps, and the file paths, identifiers or command results needed to resume without re-reading them. When that summary is complete, call codex_turn_complete exactly once so Codex can compact its history and continue in a fresh turn.";
 
 export function compileChatGptWebPrompt(
   parsed: CodexParsedRequest,
@@ -740,7 +760,7 @@ export function compileChatGptWebPrompt(
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
       ...(!manualControl ? [
-        "The attached Codex Native connector exposes executable tools separately from the task JSON. Missing tool schemas in the conversation text do not establish that tools are unavailable. Use codex_tool_inventory to discover the current tools and their schemas, and codex_tool_call with the returned wire_name for other harness tools; do not invent an interface or ask the user to supply one before checking the attached tools.",
+        CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT,
         "Use codex_exec for commands. If it returns a running session_id, use codex_write_stdin to poll that session until the required command completes, or report a concrete blocker. A running session or a wait timeout is not a completed task. If work is explicitly handed off to run in the background, state the actual handoff and do not claim continued monitoring without an active tool or scheduled mechanism.",
         ...(options?.explicitCompletion ? [
           "Ordinary assistant text is progress commentary and cannot finish this Codex turn. After every required action and verification has settled, call codex_turn_complete exactly once with the complete user-facing final answer. Do not call it with a progress report, future plan, or promise to continue.",
@@ -749,6 +769,12 @@ export function compileChatGptWebPrompt(
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Interpret brief follow-ups such as 'continue' or 'do it' in the context of the unfinished authorized task. They do not replace that task with a request for a progress report. When required work remains and tools can proceed, perform the next action in this response instead of ending with a promise or a next-step list. Respect an explicit request to stop, explain only, or wait for user input.",
       "Use actual Codex Native results as evidence for local observations and effects.",
+      "After context compaction, resume unfinished work using the current turn's attached tools and current transport handle. Describe a current tool failure using its actual tool name and returned error, rather than a historical result or an inference. Honor current approval decisions; do not retry a rejected action through another interface.",
+      "For Windows commands, specify a known existing workdir. LongPathsEnabled affects file paths, not process command-line length. Write large scripts through the native apply_patch tool and execute the saved .ps1 or .py file with a short command instead of embedding the script in -Command, -EncodedCommand, or python -c. Keep the script available for native approval and review. A nonexistent working-directory error requires correcting workdir, not shortening the command.",
+      // The hosted connector applies its own safety classification to each local call; an
+      // interrupted result can arrive without the tool output, and models otherwise misread that
+      // as a permanent block and end the turn reporting it. Re-issue in a simpler form instead.
+      "Before every local tool call after this one, re-read these Windows rules and choose the simplest successful form you already used in this conversation: one plain cmdlet, no nested quoting, no pipes beyond one. If a tool result is missing, truncated, or your own earlier text says an action was refused or interrupted, treat that action as NOT done: retry it once in a simpler equivalent form before reporting any concrete blocker, and never end the turn by describing that obstacle alone.",
       "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
       "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",
       "Continue using the available tools until the requested work is complete and verified.",
@@ -925,16 +951,27 @@ export function compileChatGptWebPrompt(
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
       const transactionId = `ctx_${"0".repeat(32)}`;
-      const budgets = multipart.parts.map((payload, index) => {
-        const final = index === multipart.parts.length - 1;
+      // The final commit embeds a manifest of the partitioned parts, so filling the parts changes
+      // the fixed text its message must carry. Partition, then re-derive the budgets from the
+      // partitioned parts until the manifest stops moving, so the final message fits its boundary
+      // by construction rather than by the planner's follow-up check alone.
+      const computeBudgets = (currentParts: ChatGptWebMultipartParts) => {
+        // The commit's manifest is rendered from multipart.parts, so publish the candidate
+        // partition before measuring the fixed text the final message must fit.
+        multipart.parts = currentParts;
+        return currentParts.map((_payload, index) => {
+        const final = index === currentParts.length - 1;
         const effort = final ? mode.effort : capabilities.proAvailable ? "max" : "medium";
         const limits = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, effort, capabilities);
         const tokenLimit = resolveChatGptWebMessageTokenBudget(
           CHATGPT_WEB_MODEL_ID, effort, capabilities, final ? imageTokens : 0,
         );
-        const fixedMessage = final
-          ? formatChatGptWebMultipartCommit(multipart, transactionId)
-          : formatChatGptWebMultipartStage(payload, transactionId, index + 1, multipartParts!).text;
+          // Only the final commit's embedded manifest changes with the partition. Stage
+          // scaffolding is constant, so it is measured against an empty stage payload; measuring
+          // a filled payload would subtract the records themselves from their own budget.
+          const fixedMessage = final
+            ? formatChatGptWebMultipartCommit(multipart, transactionId)
+            : formatChatGptWebMultipartStage(emptyPart(index), transactionId, index + 1, multipartParts!).text;
         const tokens = tokenLimit - estimateTokens(fixedMessage);
         const chars = (limits.browserComposerCharLimit ?? Infinity) - fixedMessage.length;
         if (tokens <= 0 || chars <= 0) {
@@ -944,8 +981,29 @@ export function compileChatGptWebPrompt(
           );
         }
         return { tokens, chars };
-      });
-      multipart.parts = partitionMultipartContext(records, multipartParts!, budgets);
+        });
+      };
+      // Convergence is judged on the numeric budgets, not on re-serializing the (potentially
+      // megabyte-sized) partitioned payloads.
+      const sameBudgets = (
+        left: Array<{ tokens: number; chars: number }>,
+        right: Array<{ tokens: number; chars: number }>,
+      ) => left.length === right.length
+        && left.every((budget, index) => budget.tokens === right[index]!.tokens
+          && budget.chars === right[index]!.chars);
+      // Record weights do not depend on the budgets, so the tokenizer runs once per record and
+      // the convergence passes only re-run the binary search and payload serialization.
+      const recordWeights = records.map(multipartRecordWeight);
+      let parts: ChatGptWebMultipartParts = partitionMultipartContext(records, multipartParts!, computeBudgets(multipart.parts), recordWeights);
+      let budgets = computeBudgets(parts);
+      for (let pass = 0; pass < 4; pass += 1) {
+        const next = partitionMultipartContext(records, multipartParts!, budgets, recordWeights);
+        const done = sameBudgets(budgets, computeBudgets(next));
+        parts = next;
+        if (done) break;
+        budgets = computeBudgets(parts);
+      }
+      multipart.parts = parts;
       return { text: multipart.commit, images, files, attachmentNotices: plan.notices, multipart };
     }
     const envelopeJson = withoutRetiredTurnHandles(JSON.stringify({ version: 3, system, messages }));
@@ -997,13 +1055,33 @@ export function compileChatGptWebPrompt(
   let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);
   const initialMessageCount = sourceMessages.length;
   let compiled = build(sourceMessages);
+  // A cold replay of accumulated history is one visible browser message, and ChatGPT measures its
+  // boundary in tokens. Characters alone miss CJK-dense content, which crossed the boundary at
+  // 111k characters — below the character gate above. Images ride the same boundary: the same
+  // text volume was accepted without images and rejected with ten attached, so the image reserve
+  // is subtracted from one shared inline budget instead of being checked separately.
+  const imageTokenReserve = compiled.images.reduce(
+    (total, image) => total + chatGptWebImageTokenReserve(image.detail),
+    0,
+  );
+  const baseInlineBudget = resolveChatGptWebMessageTokenBudget(
+    CHATGPT_WEB_MODEL_ID, mode.effort, capabilities, imageTokenReserve,
+  );
+  const inlineMessageTokenBudget = options?.inlineConversationTokenRemaining === undefined
+    ? baseInlineBudget
+    : Math.max(0, Math.min(baseInlineBudget, options.inlineConversationTokenRemaining));
+  const exceedsInlineContext = compiled.text.length > CHATGPT_INLINE_CONTEXT_ATTACHMENT_CHARS
+    || estimateTokens(compiled.text, parsed.modelId) > inlineMessageTokenBudget;
   if (
     !compiled.multipart
     && !manualControl
-    && !parsed._compactionRequest
     && !options?.disableGeneratedTextAttachments
-    && compiled.text.length > CHATGPT_INLINE_CONTEXT_ATTACHMENT_CHARS
+    && exceedsInlineContext
   ) {
+    // Compaction is deliberately included: a checkpoint over a history that outgrew the
+    // measured inline boundary cannot ride the legacy 110k-byte trimmed envelope, and the
+    // attachment transport lets the summarizer read the complete history instead of a
+    // truncated one.
     compiled = build(sourceMessages, true);
   }
   if (!parsed._compactionRequest) return compiled;

@@ -278,7 +278,9 @@ export class ChatGptMarkdownBuffer {
     const lastRangedCommitted = this.committed
       .filter(segment => segment.sourceEnd !== undefined)
       .at(-1);
-    const lastCommittedEnd = lastRangedCommitted?.sourceEnd;
+    // Recomputed after every in-place-edit resync: an edit rewrites the edited block's range, so
+    // a baseline captured before the loop would misjudge every downstream segment as overlapping.
+    let lastRangedCommittedEnd = lastRangedCommitted?.sourceEnd;
     let highestCommittedIndex = -1;
     let sawPending = false;
     let previousSourceStart: number | undefined;
@@ -295,19 +297,39 @@ export class ChatGptMarkdownBuffer {
       const committedIndex = this.committedIndex(segment);
       if (committedIndex !== undefined) {
         const committed = this.committed[committedIndex]!;
-        if (sawPending || committedIndex < highestCommittedIndex || committed.text !== segment.text) {
-          return this.changedCommittedBlockError(
-            sawPending || committedIndex < highestCommittedIndex ? "block_order_changed" : "text_changed",
-            segment,
-            committed,
+        if (committed.text !== segment.text) {
+          // committedIndex matched by source range: ChatGPT edited an already-streamed block in
+          // place. Resync the committed text instead of failing the turn — Codex keeps the text
+          // already streamed to it, and a long task's continuity outweighs commentary exactness.
+          // A rewrite that arrives after newer content is a reorder, not an edit, and stays fatal.
+          if (sawPending) {
+            return this.changedCommittedBlockError("block_order_changed", segment, committed);
+          }
+          console.warn(
+            `[chatgpt-web] ChatGPT edited an already-streamed block in place (${committed.text.length} -> ${segment.text.length} chars); resyncing instead of failing the turn`,
           );
+          committed.text = segment.text;
+          if (segment.sourceEnd !== undefined) committed.sourceEnd = segment.sourceEnd;
+          highestCommittedIndex = Math.max(highestCommittedIndex, committedIndex);
+          lastRangedCommittedEnd = this.committed
+            .filter(entry => entry.sourceEnd !== undefined)
+            .at(-1)?.sourceEnd;
+          continue;
+        }
+        if (sawPending || committedIndex < highestCommittedIndex) {
+          return this.changedCommittedBlockError("block_order_changed", segment, committed);
         }
         highestCommittedIndex = committedIndex;
         continue;
       }
 
-      if (segment.sourceStart !== undefined && lastCommittedEnd !== undefined) {
-        if (segment.sourceStart <= lastCommittedEnd) {
+      if (segment.sourceStart !== undefined && lastRangedCommittedEnd !== undefined) {
+        // A block starting exactly at the committed end is adjacent, not overlapping; contiguity
+        // is the natural DOM layout once an in-place edit has rewritten the boundary.
+        if (segment.sourceStart < lastRangedCommittedEnd) {
+          // No committed block starts where this one does, yet its range overlaps committed
+          // territory: the DOM was structurally rewritten, which cannot be resynced against
+          // text Codex already received.
           return this.changedCommittedBlockError("source_range_overlap", segment, lastRangedCommitted!);
         }
         sawPending = true;

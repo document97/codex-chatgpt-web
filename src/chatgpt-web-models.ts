@@ -37,11 +37,35 @@ export const CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW = 90_000;
 export const CHATGPT_WEB_MEDIUM_HIGH_AUTO_COMPACT_TOKEN_LIMIT = 80_000;
 export const CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT = 211_256;
 export const CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT = 1_048_572;
+/**
+ * Measured Plus-account ceiling for one visible browser message: ChatGPT accepted 46,410 estimated
+ * tokens inline and rejected 48,141 and 81,958-token messages as too long. The character ceilings
+ * above never bind for CJK-dense text, so bulk history has to travel as a generated attachment file
+ * instead, which carried 82,337 estimated tokens in one accepted turn. 45,000 was rejected live —
+ * the estimator drifts high on CJK-dense text against ChatGPT's own counter, so the cap sits at
+ * 40,000 and every caller budgets the image reserve against this same ceiling.
+ */
+export const CHATGPT_WEB_PLUS_MESSAGE_TOKEN_LIMIT = 40_000;
+/**
+ * Inline tokens one browser conversation may spend across all its visible messages. Measured on
+ * 2026-09-21: a fresh conversation accepted a 93,482-token three-part staging in full, and the
+ * same shape was rejected at ~158k cumulative tokens once that conversation also held the earlier
+ * transaction — so the boundary is cumulative and sits in (93k, 158k). 90k is the conservative
+ * budget; beyond it, bulk travels as a generated attachment (that shape carried 82,337 estimated
+ * tokens in one accepted turn and does not ride this boundary).
+ */
+export const CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT = 90_000;
 /** Hidden ChatGPT product prompt and Codex Native schema reserve included in usage estimates. */
 export const CHATGPT_WEB_PLATFORM_RESERVE_TOKENS = 8_192;
-/** Reserve for each attachment in the final browser message; inert stages carry no images. */
-export function chatGptWebImageTokenReserve(detail?: string): number {
-  return detail === "original" ? 8_192 : 4_096;
+/**
+ * Reserve for each attachment in the final browser message; inert stages carry no images. One
+ * flat 1,024 per image: the user-measured composer cost of a downscaled upload. The previous
+ * 4,096/8,192 tiers were context-window accounting, and ten of them alone exhausted the measured
+ * inline boundary, which forced whole-context attachments for image-heavy turns that ChatGPT
+ * actually accepted. With eight uploads maximum the image reserve is at most 8,192.
+ */
+export function chatGptWebImageTokenReserve(_detail?: string): number {
+  return 1_024;
 }
 /** Pro-account usable browser windows and separately measured one-message boundaries. */
 export const CHATGPT_WEB_PRO_AUTO_COMPACT_TOKEN_LIMIT = 95_000;
@@ -173,7 +197,10 @@ export function resolveChatGptWebTransportLimits(
       return { browserComposerCharLimit: CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT };
     }
     if (effort === "medium" || effort === "high" || (effort === "xhigh" && capabilities.extraHighAvailable)) {
-      return { browserComposerCharLimit: CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT };
+      return {
+        browserMessageTokenLimit: CHATGPT_WEB_PLUS_MESSAGE_TOKEN_LIMIT,
+        browserComposerCharLimit: CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT,
+      };
     }
     throw new Error(`ChatGPT Plus transport limit is not defined for unavailable effort: ${effort}`);
   }

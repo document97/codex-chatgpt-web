@@ -82,7 +82,7 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
       "effort:high",
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",
     ]);
-    expect(sendBudgets).toEqual(multipart ? [180_000, 180_000, 180_000] : [20_000]);
+    expect(sendBudgets).toEqual(multipart ? [180_000, 180_000, 180_000] : [60_000]);
     expect(released).toBe(true);
   } finally {
     rmSync(diagnostics, { recursive: true, force: true });

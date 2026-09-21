@@ -535,3 +535,39 @@ test("refuses a ChatGPT Web continuation when local previous-response state is u
   const body = await response.json() as { error: { message: string } };
   expect(body.error.message).toContain("partial Codex context");
 });
+
+test("allows a native-to-Web model switch when the complete transcript is present", async () => {
+  let seenPreviousResponseId: string | undefined;
+  const adapterFactory = (): ProviderAdapter => ({
+    name: "switch-test-adapter",
+    async runTurn(parsed, _incoming, emit) {
+      seenPreviousResponseId = parsed.previousResponseId;
+      emit({ type: "text_delta", text: "switched" });
+      emit({
+        type: "done",
+        stopReason: "stop",
+        endTurn: true,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimated: true },
+      });
+    },
+  });
+  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model,
+      previous_response_id: "resp_native_only",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "First request" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "Native answer" }] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Continue with Web" }] },
+      ],
+      stream: false,
+    }),
+  }), defaultConfig("browser-only"), adapterFactory);
+
+  expect(response.status).toBe(200);
+  expect(seenPreviousResponseId).toBeUndefined();
+  expect((await response.json() as { output: Array<{ content?: Array<{ text?: string }> }> }).output
+    .some(item => item.content?.some(part => part.text === "switched"))).toBe(true);
+});

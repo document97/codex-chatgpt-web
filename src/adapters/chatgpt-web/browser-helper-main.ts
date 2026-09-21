@@ -10,6 +10,19 @@ import type { CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
 
+// Node ≥15 terminates the process on an unhandled rejection. This helper is the only thing keeping
+// the browser turn alive, and a stage timeout already fails the turn through its own error path,
+// so a late loser of an aborted wait (an AbortError from a raced progress wait, for example) must
+// downgrade to a warning instead of killing the helper mid-task.
+process.on("unhandledRejection", reason => {
+  const message = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+  if (reason instanceof DOMException && reason.name === "AbortError") {
+    console.warn(`[chatgpt-web-helper] discarded a late abort rejection: ${message}`);
+    return;
+  }
+  console.error(`[chatgpt-web-helper] unhandled rejection survived (turn continues elsewhere): ${message}`);
+});
+
 interface RunMessage {
   type: "run";
   id: string;

@@ -160,6 +160,7 @@ describe("fixed ChatGPT Web model routes", () => {
       browserComposerCharLimit: 211_256,
     });
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "medium", plus)).toEqual({
+      browserMessageTokenLimit: 40_000,
       browserComposerCharLimit: 1_048_572,
     });
     expect(() => resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "xhigh", plus))

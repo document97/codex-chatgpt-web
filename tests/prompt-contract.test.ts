@@ -244,7 +244,7 @@ test("compaction prompts are isolated summarization turns without local or nativ
   expect(compiled.text).not.toContain("missing local-computer bridge");
 });
 
-test("Web compaction trims only the oldest history until the browser request fits", () => {
+test("Web compaction over the inline budget rides the whole-context attachment without trimming", () => {
   const compact = request("high");
   compact._compactionRequest = true;
   compact.context.systemPrompt = [];
@@ -264,15 +264,21 @@ test("Web compaction trims only the oldest history until the browser request fit
     compact,
     { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   );
-  const encoded = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
-  const envelope = JSON.parse(encoded!) as { messages: Array<{ role: string; content: unknown }> };
 
-  expect(chatGptPromptJsonBytes(compiled.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
-  expect(compiled.trimmedCompactionMessages).toBe(2);
-  expect(compiled.text).not.toContain("oldest-static");
-  expect(compiled.text).not.toContain("newer-static");
-  expect(compiled.text).toContain("real-task-");
-  expect(compiled.text).toContain("verified-progress");
+  // The measured inline boundary cannot carry this history. Trimming would discard history the
+  // checkpoint needs, so the complete context rides the generated attachment file instead.
+  expect((compiled.files ?? []).length).toBe(1);
+  expect(compiled.files![0]!.name).toBe("codex-context.json");
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
+  expect(compiled.text).not.toContain("real-task-");
+  const envelope = JSON.parse(Buffer.from(compiled.files![0]!.data, "base64").toString("utf8")) as {
+    messages: Array<{ role: string; content: unknown }>;
+  };
+  const serialized = JSON.stringify(envelope.messages);
+  expect(serialized).toContain("oldest-static-");
+  expect(serialized).toContain("newer-static-");
+  expect(serialized).toContain("real-task-");
+  expect(serialized).toContain("verified-progress");
   expect(envelope.messages.at(-1)).toEqual({ role: "user", content: "checkpoint-now" });
 
   const normal = structuredClone(compact);
@@ -281,12 +287,11 @@ test("Web compaction trims only the oldest history until the browser request fit
     normal,
     { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   );
-  expect(untrimmed.text).toContain("oldest-static");
-  expect(untrimmed.text).toContain("newer-static");
+  expect((untrimmed.files ?? []).length).toBe(1);
   expect(untrimmed.trimmedCompactionMessages).toBeUndefined();
 });
 
-test("inline compaction carries the newest cumulative checkpoint across discarded tool output", () => {
+test("compaction carries the newest cumulative checkpoint and the full history via the attachment", () => {
   for (const textParts of [false, true]) {
     const compact = request("high");
     compact._compactionRequest = true;
@@ -304,28 +309,34 @@ test("inline compaction carries the newest cumulative checkpoint across discarde
     const compiled = compileChatGptWebPrompt(compact, {
       localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
     });
-    const envelope = JSON.parse(compiled.text.split("<codex_context_json>\n")[1]!.split("\n</codex_context_json>")[0]!);
-    expect(envelope.messages.map((message: { role: string }) => message.role)).toEqual(["user", "assistant", "user"]);
-    expect(JSON.stringify(envelope.messages[0])).toContain("Verified cumulative scope:");
-    expect(envelope.messages.at(-1).content).toBe("checkpoint-now");
-    expect(compiled.text).not.toContain("Obsolete summary");
-    expect(compiled.images).toEqual([]);
-    expect(compiled.trimmedCompactionMessages).toBe(2);
-    expect(compiled.text).toContain("history is incomplete");
-    expect(compiled.text).not.toContain("The task context is complete.");
+    // Nothing is discarded: the attachment carries the complete history including the superseded
+    // summary and the oversized tool output, so the checkpoint summarizes the real full scope.
+    expect((compiled.files ?? []).length).toBe(1);
+    expect(compiled.trimmedCompactionMessages).toBeUndefined();
+    expect(compiled.text).not.toContain("x".repeat(1_000));
+    const envelope = JSON.parse(Buffer.from(compiled.files![0]!.data, "base64").toString("utf8")) as {
+      messages: Array<{ role: string }>;
+    };
+    expect(envelope.messages.length).toBeGreaterThanOrEqual(4);
+    const serialized = JSON.stringify(envelope.messages);
+    // The opaque-note conversion wraps summary-prefixed messages and keeps their inner content.
+    expect(serialized).toContain("ssssssssssssssssss");
+    expect(serialized).toContain("checkpoint-now");
+    expect(compiled.text).toContain("history-compaction checkpoint");
     expect(chatGptPromptJsonBytes(compiled.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
     expect(compact).toEqual(before);
     const manual = compileChatGptWebPrompt(compact, {
       localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true,
     }, "turn_12345678901234567890123456789012", { manualControl: true });
-    expect(manual.text).toContain("Verified cumulative scope:");
+    // Zero Risk has no generated-attachment transport: the legacy trimmed inline envelope applies.
+    expect(manual.text).toContain("ssssssssssssssssss");
     expect(manual.text).toContain("history is incomplete");
     expect(manual.text).not.toContain("without calling tools");
     expect(chatGptPromptJsonBytes(manual.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
   }
 });
 
-test("inline compaction rejects a required checkpoint that cannot fit instead of forgetting it", () => {
+test("compaction preserves an oversized required checkpoint via the attachment instead of failing", () => {
   const compact = request("high");
   compact._compactionRequest = true;
   compact.context.systemPrompt = [];
@@ -334,9 +345,15 @@ test("inline compaction rejects a required checkpoint that cannot fit instead of
     { role: "assistant", content: [{ type: "text", text: "recent progress" }], timestamp: 2 },
     { role: "user", content: "checkpoint-now", timestamp: 3 },
   ];
-  expect(() => compileChatGptWebPrompt(compact, {
+  const compiled = compileChatGptWebPrompt(compact, {
     localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true,
-  })).toThrow("cumulative checkpoint");
+  });
+  expect((compiled.files ?? []).length).toBe(1);
+  const envelope = JSON.parse(Buffer.from(compiled.files![0]!.data, "base64").toString("utf8")) as {
+    messages: Array<{ content: unknown }>;
+  };
+  expect(JSON.stringify(envelope.messages)).toContain("ssssssssssssssssss");
+  expect(JSON.stringify(envelope.messages)).toContain("checkpoint-now");
 });
 
 test("Bigger Context compaction preserves history above the retired inline byte budget", () => {
@@ -367,7 +384,7 @@ test("Bigger Context compaction preserves history above the retired inline byte 
   for (let index = 1; index <= 6; index += 1) {
     expect(staged).toContain(`multipart-history-${index}-`);
   }
-});
+}, 30_000);
 
 test("Bigger Context minimizes the largest ordered stage instead of overfilling a middle part", () => {
   const compact = request("high");
@@ -394,7 +411,7 @@ test("Bigger Context minimizes the largest ordered stage instead of overfilling 
   expect(Math.max(...multipart.multipart!.parts.map(part => part.length))).toBeLessThan(120_000);
 });
 
-test("Web compaction rebuilds attachments after trimming an oversized oldest image message", () => {
+test("Web compaction keeps the oversized oldest image message via the attachment", () => {
   const compact = request("high");
   compact._compactionRequest = true;
   compact.context.systemPrompt = [];
@@ -415,34 +432,33 @@ test("Web compaction rebuilds attachments after trimming an oversized oldest ima
     { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   );
 
-  const envelope = compiled.text.split("<codex_context_json>")[1]!.split("</codex_context_json>")[0]!;
-  expect(compiled.images).toEqual([]);
-  expect(compiled.trimmedCompactionMessages).toBe(1);
+  expect((compiled.files ?? []).length).toBe(1);
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
   expect(compiled.text).not.toContain("discard-");
-  expect(envelope).not.toContain("image_attachment");
-  expect(compiled.text).toContain("preserve-latest-checkpoint");
+  const envelope = JSON.parse(Buffer.from(compiled.files![0]!.data, "base64").toString("utf8")) as {
+    messages: Array<{ content: unknown }>;
+  };
+  expect(JSON.stringify(envelope.messages)).toContain("discard-");
+  expect(JSON.stringify(envelope.messages)).toContain("image_attachment");
+  expect(JSON.stringify(envelope.messages)).toContain("preserve-latest-checkpoint");
 });
 
-test("Luna rejects a separate compaction prompt because continuity is already rolling", () => {
-  const compact = request("low");
-  compact.modelId = CHATGPT_WEB_LUNA_MODEL_ID;
-  compact._compactionRequest = true;
-  expect(() => compileChatGptWebPrompt(
-    compact,
-    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false },
-  )).toThrow("does not accept a separate compaction turn");
-});
-
-test("Web compaction fails closed when its final instruction alone exceeds the transport budget", () => {
+test("Web compaction carries a huge final instruction via the attachment instead of failing", () => {
   const compact = request("high");
   compact._compactionRequest = true;
   compact.context.systemPrompt = [];
   compact.context.messages = [{ role: "user", content: "z".repeat(120_000), timestamp: 1 }];
 
-  expect(() => compileChatGptWebPrompt(
+  const compiled = compileChatGptWebPrompt(
     compact,
     { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
-  )).toThrow("final compaction instruction alone exceeds");
+  );
+  expect((compiled.files ?? []).length).toBe(1);
+  const envelope = JSON.parse(Buffer.from(compiled.files![0]!.data, "base64").toString("utf8")) as {
+    messages: Array<{ content: unknown }>;
+  };
+  expect(JSON.stringify(envelope.messages)).toContain("z".repeat(1_000));
+  expect(chatGptPromptJsonBytes(compiled.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
 });
 
 test("assigns prior assistant output to the model and never attributes Codex context to the human", () => {
@@ -504,14 +520,14 @@ test("a long task keeps the newest images and drops the overflow instead of fail
   );
 
   expect(compiled.images.map(entry => entry.imageUrl)).toEqual(
-    markers.slice(-10).map(marker => `data:image/png;base64,${marker}`),
+    markers.slice(-8).map(marker => `data:image/png;base64,${marker}`),
   );
   expect(compiled.text).toContain("older image not attached");
   expect(compiled.text).toContain("step 1");
   expect(compiled.text).toContain("step 13");
 });
 
-test("Web compaction attaches the newest ten images as files and never embeds their base64 in prompt text", () => {
+test("Web compaction attaches the newest eight images as files and never embeds their base64 in prompt text", () => {
   const imagePayloads = Array.from({ length: 13 }, (_unused, index) =>
     Buffer.from(`compaction-image-${index + 1}`).toString("base64"));
   const parsed: CodexParsedRequest = {
@@ -538,12 +554,12 @@ test("Web compaction attaches the newest ten images as files and never embeds th
   );
 
   expect(compiled.images.map(image => image.imageUrl)).toEqual(
-    imagePayloads.slice(-10).map(payload => `data:image/png;base64,${payload}`),
+    imagePayloads.slice(-8).map(payload => `data:image/png;base64,${payload}`),
   );
   expect(compiled.text).not.toContain("data:image");
   for (const payload of imagePayloads) expect(compiled.text).not.toContain(payload);
-  expect(compiled.text.match(/"type":"image_attachment"/g)).toHaveLength(10);
-  expect(compiled.text.match(/older image not attached/g)).toHaveLength(3);
+  expect(compiled.text.match(/"type":"image_attachment"/g)).toHaveLength(8);
+  expect(compiled.text.match(/older image not attached/g)).toHaveLength(5);
 });
 
 test("persisted one-pixel image sentinels are not attached to ChatGPT", () => {

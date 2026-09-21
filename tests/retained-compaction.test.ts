@@ -1230,14 +1230,19 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     expect(turn.conversationKey).toBeUndefined();
     expect(turn.compaction).toBeTrue();
     const prepared = await turn.prepare();
-    const contextText = prepared.multipart?.parts.join("\n") ?? prepared.text;
+    // Compaction never stages multipart: an oversized history rides the whole-context
+    // attachment, whose envelope is part of the effective task context alongside the inline text.
+    const contextText = [
+      prepared.multipart?.parts.join("\n") ?? prepared.text,
+      ...(prepared.files ?? []).map(file => Buffer.from(file.data, "base64").toString("utf8")),
+    ].join("\n");
     expect(contextText).toContain("Original task");
     expect(contextText).toContain("Continue with the next step");
     if (experimentalBiggerContext) {
-      expect(prepared.multipart!.parts).toHaveLength(3);
+      expect(prepared.multipart).toBeUndefined();
       expect(prepared.trimmedCompactionMessages).toBeUndefined();
-      const lastRecord = prepared.multipart!.parts.flatMap(part => JSON.parse(part).records).at(-1);
-      expect(lastRecord.message.content).toBe(compact.context.messages.at(-1)!.content);
+      expect((prepared.files ?? []).length).toBe(1);
+      expect(prepared.files![0]!.name).toBe("codex-context.json");
     }
     prepared.release();
     return "Fallback checkpoint from canonical Codex context";

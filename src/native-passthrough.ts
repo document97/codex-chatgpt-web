@@ -64,14 +64,18 @@ function nativeDiagnosticId(value: string | null): string | undefined {
   return value && /^[A-Za-z0-9._:-]{1,128}$/.test(value) ? value : undefined;
 }
 
+function isReasoningType(value: unknown): boolean {
+  return typeof value === "string" && value.toLowerCase() === "reasoning";
+}
+
 function isBridgeReasoningItem(value: unknown): value is JsonObject {
-  if (!isObject(value) || value.type !== "reasoning") return false;
+  if (!isObject(value) || !isReasoningType(value.type)) return false;
   const encrypted = value.encrypted_content;
   if (typeof encrypted === "string" && encrypted.startsWith(BRIDGE_REASONING_PREFIX)) return true;
   return typeof value.id === "string"
-    && /^rs_[0-9a-f]{32}$/i.test(value.id)
+    && /^rs_[0-9a-f]{32,64}$/i.test(value.id)
     && (encrypted === undefined || encrypted === null)
-    && (Array.isArray(value.summary) || Array.isArray(value.content));
+    && (Array.isArray(value.summary) || Array.isArray(value.content) || Array.isArray(value.summary_text));
 }
 
 function isBridgeCompactionItem(value: unknown): value is BridgeCompactionItem {
@@ -109,7 +113,11 @@ export function scrubBridgeArtifactsForNative(value: unknown): { value: unknown;
         content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n\n${summary}` }],
       }];
     }
-    if (clean.type !== "reasoning") return [clean];
+    if (!isReasoningType(clean.type)) return [clean];
+    // Session event records use `Reasoning`, while Responses input uses `reasoning`. Normalize the
+    // copied request item only; the session transcript and the Web provider's own history remain
+    // untouched, so switching back to Web in this same conversation is still possible.
+    clean.type = "reasoning";
 
     if (typeof clean.encrypted_content === "string"
       && clean.encrypted_content.startsWith(BRIDGE_REASONING_PREFIX)) {
@@ -117,6 +125,17 @@ export function scrubBridgeArtifactsForNative(value: unknown): { value: unknown;
     } else if (clean.encrypted_content === null) {
       delete clean.encrypted_content;
     }
+
+    // Codex's session event form uses `summary_text`; Responses input uses `summary`. Translate
+    // the copied item instead of forwarding an event-log-only field to the official API.
+    if (!Array.isArray(clean.summary) && Array.isArray(clean.summary_text)) {
+      const summary = clean.summary_text
+        .filter((text): text is string => typeof text === "string")
+        .map(text => ({ type: "summary_text", text }));
+      if (summary.length > 0) clean.summary = summary;
+    }
+    delete clean.summary_text;
+    delete clean.raw_content;
 
     const hasSummary = Array.isArray(clean.summary) && clean.summary.length > 0;
     const hasContent = Array.isArray(clean.content) && clean.content.length > 0;

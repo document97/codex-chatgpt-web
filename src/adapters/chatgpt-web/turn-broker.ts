@@ -104,6 +104,7 @@ interface BrokerRequest {
     | "owner_complete"
     | "owner_completion_fence_begin"
     | "owner_completion_fence_commit"
+    | "owner_completion_fence_validate"
     | "owner_wait_retirement"
     | "owner_revoke"
     | "owner_safe_wait_start"
@@ -228,10 +229,15 @@ export interface TurnBrokerOwner {
   waitForSafeStart(token: string, signal?: AbortSignal): Promise<void>;
   waitForSafeCompletion(token: string, signal?: AbortSignal): Promise<string>;
   waitForCompletion(token: string, signal?: AbortSignal): Promise<string>;
+  completeTurn(
+    token: string,
+    finalAnswer: string,
+  ): { completed: true; duplicate: boolean } | Promise<{ completed: true; duplicate: boolean }>;
   requestCompaction(token: string, queuedResult: BrokerToolResult): number | Promise<number>;
   compactionDeliveryCount(token: string): number | Promise<number>;
   beginCompletionFence(token: string): number | undefined | Promise<number | undefined>;
   commitCompletionFence(token: string, revision: number): boolean | Promise<boolean>;
+  validateCompletionFence(token: string, revision: number): boolean | Promise<boolean>;
   waitForRetirement(token: string, signal?: AbortSignal): Promise<void>;
   revoke(token: string, reason?: Error): void | Promise<void>;
 }
@@ -465,6 +471,22 @@ export class TurnBroker implements TurnBrokerOwner {
       `[chatgpt-web] broker trace=${channel.traceId} committed browser completion revision=${revision}`,
     );
     return true;
+  }
+
+  validateCompletionFence(token: string, revision: number): boolean {
+    this.prune();
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error("turn completion fence revision is invalid");
+    }
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("turn token is invalid or expired");
+    // Explicit-completion browser turns use DOM completion only as a stable pause boundary. Keep
+    // the MCP capability open so a retained continuation can finish work or submit the required
+    // codex_turn_complete call without racing an activity that began during the final DOM read.
+    return !channel.completionCommitted
+      && channel.activityRevision === revision
+      && channel.activities.size === 0
+      && channel.invocations.size === 0;
   }
 
   completeTurn(token: string, finalAnswer: string): { completed: true; duplicate: boolean } {
@@ -915,7 +937,7 @@ export class TurnBroker implements TurnBrokerOwner {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || request.id.length === 0 || request.id.length > 256) {
       throw new Error("turn broker request id is invalid");
     }
-    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "native_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
+    if (!["claim", "resolve", "release", "invoke", "owner_status", "owner_register", "owner_register_safe", "owner_update", "owner_safe_sent", "owner_next", "owner_complete", "owner_completion_fence_begin", "owner_completion_fence_commit", "owner_completion_fence_validate", "owner_wait_retirement", "owner_revoke", "owner_safe_wait_start", "owner_safe_wait_completion", "owner_wait_completion", "owner_request_compaction", "owner_compaction_delivery_count", "safe_start", "safe_complete", "native_complete", "activity_complete", "submit_compaction_handoff"].includes(request.method)) {
       throw new Error("turn broker method is invalid");
     }
   }
@@ -956,7 +978,7 @@ export class TurnBroker implements TurnBrokerOwner {
       return { submitted: true };
     }
     if (request.method === "owner_status") {
-      return { protocolVersion: 5, acceptingExternalOwners: this.acceptingExternalOwners };
+      return { protocolVersion: 6, acceptingExternalOwners: this.acceptingExternalOwners };
     }
     if (request.method === "owner_register") {
       const environment = ownerEnvironment(request.environment);
@@ -1044,6 +1066,11 @@ export class TurnBroker implements TurnBrokerOwner {
     if (request.method === "owner_compaction_delivery_count") {
       if (!request.token) throw new Error("turn owner token is required");
       return { count: this.compactionDeliveryCount(request.token) };
+    }
+    if (request.method === "owner_completion_fence_validate") {
+      if (!request.token) throw new Error("turn owner token is required");
+      if (!Number.isSafeInteger(request.revision)) throw new Error("turn completion fence revision is required");
+      return { valid: this.validateCompletionFence(request.token, request.revision!) };
     }
     if (request.method === "claim") {
       const contract = request.contract ?? "native";
@@ -1354,7 +1381,7 @@ export class RemoteTurnBroker implements TurnBrokerOwner {
         + ` (${error instanceof Error ? error.message : String(error)})`,
       );
     }
-    if (status.protocolVersion !== 5) {
+    if (status.protocolVersion !== 6) {
       throw new Error(`Unsupported DEV turn-owner protocol version: ${String(status.protocolVersion)}`);
     }
     if (status.acceptingExternalOwners !== true) {
@@ -1442,6 +1469,16 @@ export class RemoteTurnBroker implements TurnBrokerOwner {
     }, null);
   }
 
+  async completeTurn(token: string, finalAnswer: string): Promise<{ completed: true; duplicate: boolean }> {
+    const response = await callTurnBroker<{ completed?: unknown; duplicate?: unknown }>(
+      this.socketPath,
+      { method: "native_complete", token, finalAnswer },
+      null,
+    );
+    if (response.completed !== true) throw new Error("DEV turn owner received an invalid completion result");
+    return { completed: true, duplicate: response.duplicate === true };
+  }
+
   async waitForSafeStart(token: string, signal?: AbortSignal): Promise<void> {
     const response = await callTurnBroker<{ started?: unknown }>(
       this.socketPath,
@@ -1523,6 +1560,18 @@ export class RemoteTurnBroker implements TurnBrokerOwner {
       throw new Error("DEV turn owner received an invalid completion fence result");
     }
     return response.committed;
+  }
+
+  async validateCompletionFence(token: string, revision: number): Promise<boolean> {
+    const response = await callTurnBroker<{ valid?: unknown }>(this.socketPath, {
+      method: "owner_completion_fence_validate",
+      token,
+      revision,
+    });
+    if (typeof response.valid !== "boolean") {
+      throw new Error("DEV turn owner received an invalid completion fence validation result");
+    }
+    return response.valid;
   }
 
   async waitForRetirement(token: string, signal?: AbortSignal): Promise<void> {

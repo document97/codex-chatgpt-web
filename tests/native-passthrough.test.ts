@@ -206,6 +206,43 @@ test("removes ChatGPT Web item identities before native Codex compaction", async
   expect(forwarded.input.at(-1)).toEqual({ type: "compaction_trigger" });
 });
 
+test("scrubs capitalized Web reasoning event items only in the native request copy", async () => {
+  const localId = `rs_${"a".repeat(50)}`;
+  const body = {
+    model: "gpt-5.6-sol",
+    previous_response_id: "resp_local_web_turn",
+    input: [
+      {
+        type: "Reasoning",
+        id: localId,
+        summary_text: ["preserve this summary"],
+      },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ],
+  };
+  const request = new Request("http://127.0.0.1:17841/v1/responses", {
+    method: "POST",
+    headers: { authorization: "Bearer codex-oauth-token", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let upstreamRequest: Request | undefined;
+  await forwardNativeCodexRequest(request, "responses", async input => {
+    upstreamRequest = input;
+    return new Response("data: native\n\n", { headers: { "content-type": "text/event-stream" } });
+  }, body);
+
+  const forwarded = await upstreamRequest!.json() as { previous_response_id?: string; input: Array<Record<string, unknown>> };
+  expect(forwarded).not.toHaveProperty("previous_response_id");
+  expect(forwarded.input[0]).toEqual({
+    type: "reasoning",
+    summary: [{ type: "summary_text", text: "preserve this summary" }],
+  });
+  expect(body.input[0]).toMatchObject({
+    type: "Reasoning",
+    id: localId,
+  });
+});
+
 test("converts ChatGPT Web compaction checkpoints before switching back to native Codex", async () => {
   const summary = "Keep the verified repository state and continue from the failing test.";
   const body = {

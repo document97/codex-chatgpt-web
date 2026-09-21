@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
-import { isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
+import { CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT, isChatGptWebZeroRiskBackendModel } from "../../chatgpt-web-models";
+import { estimateTokens } from "../../lib/token-estimate";
 import { defaultBrokerEndpoint, expandUserPath, resolveBrokerEndpoint } from "../../config";
 import {
   cancelLauncherManualTurn,
@@ -22,14 +23,23 @@ import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
-import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
+import {
+  chatGptTurnUserRevisionHistory,
+  chatGptTurnUserRevisionId,
+  extractChatGptTurnEnvironment,
+  extractChatGptTurnIdentity,
+  priorChatGptAbortedTurnIds,
+} from "./environment";
+import { ChatGptRetainedInstructionLedger } from "./instruction-ledger";
+import { ChatGptInlineBudgetLedger } from "./inline-budget";
+import { compiledChatGptWebMessages } from "./input-tokens";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
+import { CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT, CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
-import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
+import { chatGptWebContextYieldTokenLimit, estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
 import {
   ChatGptLunaCheckpointStore,
@@ -232,11 +242,15 @@ function brokerContent(content: string | CodexContentPart[]): unknown[] {
   });
 }
 
-function brokerResult(message: CodexToolResultMessage): BrokerToolResult {
-  const content = brokerContent(message.content);
-  const text = typeof message.content === "string"
+function toolResultText(message: CodexToolResultMessage): string {
+  return typeof message.content === "string"
     ? message.content
     : message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+}
+
+function brokerResult(message: CodexToolResultMessage): BrokerToolResult {
+  const content = brokerContent(message.content);
+  const text = toolResultText(message);
   const structured = structuredContent(text);
   return {
     content,
@@ -337,6 +351,85 @@ function validateBatchTools(parsed: CodexParsedRequest, requests: BrokerToolRequ
 /** Keep the Responses bridge alive during every awaited phase of a browser turn. */
 export const CHATGPT_WEB_ADAPTER_HEARTBEAT_MS = 10_000;
 
+function explicitCompletionRecoveryPrompt(
+  turnToken: string,
+  previousText?: string,
+  contextBudgetExhausted = false,
+): string {
+  // Assistant-side prefill is not available on the ChatGPT surface; quoting the model's own
+  // closing text into the continuation request reproduces the prefill's pull into mid-task mode.
+  const quoted = previousText?.replace(/\s+/g, " ").trim().slice(-280);
+  return [
+    quoted
+      ? `Your previous response ended with: "${quoted}". Continue from exactly where that left off.`
+      : "The immediately preceding Codex response ended without the required terminal handoff.",
+    CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT,
+    ...(contextBudgetExhausted
+      ? [CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION]
+      : [
+        "Do not restart or repeat completed work. Review the existing conversation and tool results.",
+        "If the quoted text or your own plan names work still to do, perform the next action now with the available Codex tools and verify the result; do not restate plans or report status instead of acting.",
+        "When all requested work is complete, call codex_turn_complete exactly once with the complete user-facing final answer.",
+      ]),
+    "Do not reply with an ordinary progress message. The terminal tool is required. Repeating your previous answer as plain text is not a valid outcome.",
+    `Pass turn_token ${turnToken} unchanged to every Codex Native call in this response and do not expose it in the answer.`,
+  ].join("\n");
+}
+
+const normalizeTurnText = (value: string) => value.toLowerCase().replace(/\s+/g, " ").trim();
+
+/**
+ * A Codex resume can replay the exact canonical history with no new user content at all. The
+ * retained conversation already owns that history, so it receives only this nudge; the compile's
+ * own transport contract supplies the tool and completion rules around it.
+ */
+const CHATGPT_WEB_RESUME_NUDGE =
+  "The user resumed this Codex task. Continue the unfinished work from this conversation's existing context: perform the next required action now with the attached Codex tools. Do not restart completed work and do not reply with a progress report instead of acting.";
+
+function resumeNudgeRequest(parsed: CodexParsedRequest): CodexParsedRequest {
+  return {
+    ...parsed,
+    context: {
+      ...parsed.context,
+      messages: [{ role: "user", content: CHATGPT_WEB_RESUME_NUDGE, timestamp: Date.now() }],
+    },
+  };
+}
+
+/**
+ * Whether the history Codex will replay for the next request has already spent the room a further
+ * tool round needs. The bridge cannot shrink that history — Codex owns it — so the only available
+ * action is to stop extending the turn and ask for a resumable handoff instead.
+ */
+function contextBudgetExhausted(
+  usageInput: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+  experimentalBiggerContext: boolean | undefined,
+  pendingResultTokens = 0,
+): boolean {
+  const yieldAtTokens = chatGptWebContextYieldTokenLimit(
+    usageInput, capabilities, experimentalBiggerContext === true,
+  );
+  return yieldAtTokens !== undefined
+    && estimateChatGptWebUsage(usageInput, {}, capabilities, experimentalBiggerContext).inputTokens
+      + pendingResultTokens >= yieldAtTokens;
+}
+
+// A continuation round that reproduces the previous round's text means the model is idling:
+// further rounds would burn the same tokens. The auto-completion fallback decides the outcome.
+function isRepeatedStatus(previous: string, current: string): boolean {
+  const left = normalizeTurnText(previous);
+  const right = normalizeTurnText(current);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const leftTokens = new Set(left.split(" "));
+  const rightTokens = new Set(right.split(" "));
+  if (leftTokens.size < 8 || rightTokens.size < 8) return false;
+  let shared = 0;
+  for (const token of rightTokens) if (leftTokens.has(token)) shared += 1;
+  return shared / Math.min(leftTokens.size, rightTokens.size) >= 0.85;
+}
+
 export function createChatGptWebAdapter(
   provider: CodexProviderConfig,
   dependencies: {
@@ -358,6 +451,10 @@ export function createChatGptWebAdapter(
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
     extraHighAvailable: provider.chatgptWeb?.extraHighAvailable === true,
     proAvailable: provider.chatgptWeb?.proAvailable === true,
+    // The model catalog already advertises the multiplied window to Codex; the browser preflight
+    // reads the same flag from capabilities, so a whole-context attachment turn estimated above
+    // the base window must be judged against the window Codex actually believes it has.
+    ...(experimentalBiggerContext === true ? { experimentalBiggerContext: true } : {}),
   };
   const explicitCompletionRequired = provider.chatgptWeb?.explicitCompletion === true;
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
@@ -366,6 +463,45 @@ export function createChatGptWebAdapter(
     && provider.chatgptWeb.browserHostDescriptorPath
       ? resolve(expandUserPath(provider.chatgptWeb.browserHostDescriptorPath))
       : undefined;
+  /**
+   * Inline tokens already spent per retained browser conversation, persisted so a restarted
+   * daemon does not restage fresh inline bulk into a Temporary Chat the launcher kept alive.
+   * ChatGPT's composer boundary is cumulative per conversation; once the allowance is spent,
+   * bulk content travels as a generated attachment instead. Accounting is recorded optimistically
+   * at compile time, which only ever forces attachments.
+   */
+  const inlineBudget = new ChatGptInlineBudgetLedger(
+    provider.chatgptWeb?.inlineBudgetStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.inlineBudgetStatePath))
+      : undefined,
+  );
+  const remainingInlineTokens = (conversationKey: string): number | undefined => {
+    const sent = inlineBudget.spent(conversationKey);
+    return sent === undefined
+      ? undefined
+      : Math.max(0, CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT - sent);
+  };
+  /**
+   * ChatGPT's too-long rejection proves this browser conversation already spent its cumulative
+   * inline budget — including spend this process never observed (a ledger restored empty under a
+   * Temporary Chat the launcher kept alive). Mark it spent out so every later compile rides the
+   * attachment transport, and release the loaded conversation so the next turn seeds a fresh one.
+   */
+  const healOverspentConversation = async (error: unknown, conversationKey: string | undefined): Promise<void> => {
+    if (conversationKey === undefined) return;
+    if (!(error instanceof ChatGptWebAdapterError) || error.code !== "context_length_exceeded"
+      || !error.message.startsWith("ChatGPT rejected this browser message as too long")) return;
+    inlineBudget.record(conversationKey, CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT);
+    if (retainedLauncherDescriptor) {
+      await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey).catch(() => undefined);
+    }
+    console.warn(`[chatgpt-web] browser conversation ${conversationKey.slice(0, 8)} was rejected as too long; marked spent and released so the retry rides a fresh attachment-transport conversation`);
+  };
+  const instructionLedger = new ChatGptRetainedInstructionLedger(
+    provider.chatgptWeb?.instructionLedgerStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.instructionLedgerStatePath))
+      : undefined,
+  );
   if (manualInteraction) {
     if (!configuredCapabilities.localToolsEnabled) {
       throw new Error("ChatGPT Zero Risk requires the Full Codex harness");
@@ -421,8 +557,31 @@ export function createChatGptWebAdapter(
       && retainedLauncherDescriptor
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
-    const resumeInput = conversationKey
+    // Classify an older-turn instruction against what its browser conversation already carried
+    // (ChatGptRetainedInstructionLedger): proven delivery is a Codex resume and continues the
+    // retained conversation; unproven delivery is an edited resubmit and seeds a fresh
+    // conversation from the full canonical history after releasing the stale one.
+    const latestRevision = conversationKey !== undefined
+      ? chatGptTurnUserRevisionHistory(checkpointInput.parsed).at(-1)
+      : undefined;
+    const revisionAlreadyDelivered = conversationKey === undefined
+      || latestRevision === undefined
+      || latestRevision.turnId === undefined
+      || latestRevision.turnId === identity.turnId
+      || instructionLedger.delivered(conversationKey, chatGptTurnUserRevisionId(latestRevision));
+    const editedResubmit = !revisionAlreadyDelivered;
+    const resumeInput = conversationKey && !editedResubmit
       ? retainedConversationResumeRequest(checkpointInput.parsed)
+      : undefined;
+    // A resumed task whose canonical history ends at the last assistant reply supplies no new
+    // suffix; the retained conversation owns that history, so continue it with an explicit
+    // resume nudge instead of replaying the full history into it.
+    const resumeNudgeInput = conversationKey !== undefined && !editedResubmit
+      && latestRevision !== undefined
+      && latestRevision.turnId !== undefined
+      && latestRevision.turnId !== identity.turnId
+      && resumeInput === undefined
+      ? resumeNudgeRequest(checkpointInput.parsed)
       : undefined;
     const retainConversation = conversationKey !== undefined;
     const releaseRetainedConversation = conversationKey && retainedLauncherDescriptor
@@ -432,14 +591,20 @@ export function createChatGptWebAdapter(
       : undefined;
     const compileOptionsFor = (input: CodexParsedRequest) => {
       if (manualRequest) return {};
+      const inlineRemaining = conversationKey !== undefined
+        ? remainingInlineTokens(conversationKey)
+        : undefined;
       const experimentalMultipartParts = experimentalBiggerContext
-        ? resolveBiggerContextMultipartParts(input, turnCapabilities)
+        ? resolveBiggerContextMultipartParts(input, turnCapabilities, inlineRemaining)
         : undefined;
       return {
         captureLunaCheckpoint,
         ...(explicitCompletionRequired && !input._compactionRequest ? { explicitCompletion: true as const } : {}),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
+          : {}),
+        ...(inlineRemaining !== undefined
+          ? { inlineConversationTokenRemaining: inlineRemaining }
           : {}),
       };
     };
@@ -729,6 +894,19 @@ export function createChatGptWebAdapter(
           turnToken,
           compileOptionsFor(input),
         );
+        if (conversationKey !== undefined) {
+          // Multipart stages carry the bulk inline, so the spend is every visible browser
+          // message of this compile — not just the commit text the single-message shape has.
+          inlineBudget.record(
+            conversationKey,
+            compiledChatGptWebMessages(compiled)
+              .reduce((total, text) => total + estimateTokens(text, input.modelId), 0),
+          );
+          instructionLedger.record(
+            conversationKey,
+            chatGptTurnUserRevisionHistory(input).map(revision => chatGptTurnUserRevisionId(revision)),
+          );
+        }
         // Publish only after preparation succeeds: otherwise its failure revokes the token
         // before the response observer uses it and masks the cause as an expired capability.
         observeCapabilityRetirement(turnToken, externalProgress);
@@ -743,64 +921,183 @@ export function createChatGptWebAdapter(
         throw error;
       }
     };
-    const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({
-      traceId,
-      modelId: parsed.modelId,
-      reasoning: parsed.options.reasoning,
-      capabilities: turnCapabilities,
-      prepare: () => prepareWith(checkpointInput.parsed),
-      ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
-      ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
-      abortSignal: browserAbort.signal,
-      ...(parsed._compactionRequest ? { compaction: true } : {}),
-      ...submissionLifecycle,
-      ...multipartProgressLifecycle,
-      onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
-      onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
+    const completionFence = {
+      begin: async () => broker.beginCompletionFence(await token.promise),
+      // A DOM answer is terminal in legacy mode. In explicit-completion mode it is only a stable
+      // pause boundary: keep the MCP capability open for one retained corrective continuation.
+      commit: async (revision: number) => explicitCompletionRequired
+        ? broker.validateCompletionFence(await token.promise, revision)
+        : broker.commitCompletionFence(await token.promise, revision),
+    };
+    const browserCallbacks = {
+      onReasoningSummary: (value: string, continuation?: boolean) => trace.push({
+        kind: "reasoning" as const,
+        text: value,
+        ...(continuation ? { continuation: true as const } : {}),
+      }),
+      onCommentary: (value: string, continuation?: boolean) => trace.push({
+        kind: "commentary" as const,
+        text: value,
+        ...(continuation ? { continuation: true as const } : {}),
+      }),
       // With explicit completion, browser text is progress commentary; codex_turn_complete owns
       // the only terminal answer. Compatibility/test providers retain the legacy DOM final.
-      onTextDelta: delta => {
+      onTextDelta: (delta: string) => {
         if (!explicitCompletionRequired) text.push(delta);
       },
-      externalProgress,
-      completionFence: {
-        begin: async () => broker.beginCompletionFence(await token.promise),
-        commit: async revision => broker.commitCompletionFence(await token.promise, revision),
-      },
-      ...(captureLunaCheckpoint ? {
-        captureLunaCheckpoint: true,
-        onLunaCheckpoint: captureCheckpoint,
-      } : {}),
-    }))), browserAbort);
+    };
+    let terminalAccepted = false;
+    const runBrowserSequence = async (): Promise<string> => {
+      // An edited resubmit reuses the conversation key with history the retained conversation
+      // never saw. Release the stale conversation before leasing so this turn seeds a fresh one.
+      if (editedResubmit && conversationKey !== undefined) {
+        instructionLedger.forget(conversationKey);
+        inlineBudget.forget(conversationKey);
+        if (retainedLauncherDescriptor) {
+          await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey);
+        }
+      }
+      let initialAnswer: string;
+      try {
+        initialAnswer = await finalizeCheckpoint(worker.run({
+          traceId,
+          modelId: parsed.modelId,
+          reasoning: parsed.options.reasoning,
+          capabilities: turnCapabilities,
+          prepare: () => prepareWith(checkpointInput.parsed),
+          ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+          ...(resumeNudgeInput ? { prepareResume: () => prepareWith(resumeNudgeInput) } : {}),
+          ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
+          abortSignal: browserAbort.signal,
+          ...(parsed._compactionRequest ? { compaction: true } : {}),
+          ...submissionLifecycle,
+          ...multipartProgressLifecycle,
+          ...browserCallbacks,
+          externalProgress,
+          completionFence,
+          ...(captureLunaCheckpoint ? {
+            captureLunaCheckpoint: true,
+            onLunaCheckpoint: captureCheckpoint,
+          } : {}),
+        }));
+      } catch (error) {
+        await healOverspentConversation(error, conversationKey);
+        throw error;
+      }
+      if (!explicitCompletionRequired || !conversationKey || browserAbort.signal.aborted) {
+        return initialAnswer;
+      }
+      const turnToken = await token.promise;
+      let previousRoundText = initialAnswer;
+      const yieldAtTokens = chatGptWebContextYieldTokenLimit(
+        currentUsageInput(parsed), turnCapabilities, experimentalBiggerContext,
+      );
+      // Codex compacts from the history it will replay, and the bridge's own request estimate is
+      // the same number it reports as usage — so this is the budget signal available before the
+      // turn closes. The first browser answer joins that history too.
+      let projectedTokens = yieldAtTokens === undefined ? 0
+        : estimateChatGptWebUsage(currentUsageInput(parsed), {}, turnCapabilities, experimentalBiggerContext).inputTokens
+          + estimateTokens(initialAnswer, parsed.modelId);
+      // The model owns the finish line only through codex_turn_complete; the bridge owns the
+      // continuation. Rounds run until that terminal call, an idle repeat, the context budget or an
+      // abort — never a round count.
+      for (let round = 1; !browserAbort.signal.aborted && !terminalAccepted; round += 1) {
+        const budgetExhausted = yieldAtTokens !== undefined && projectedTokens >= yieldAtTokens;
+        const continuationText = explicitCompletionRecoveryPrompt(turnToken, previousRoundText, budgetExhausted);
+        const continuationPrepared = async () => ({
+          text: continuationText,
+          images: [],
+          release: () => {},
+        });
+        // Continuation rounds bypass prepareWith, so their inline spend joins the same
+        // per-conversation ledger the seeded and resumed messages use.
+        if (conversationKey !== undefined) {
+          inlineBudget.record(conversationKey, estimateTokens(continuationText, parsed.modelId));
+        }
+        console.warn(`[chatgpt-web] browser turn ${traceId} ended without codex_turn_complete; requesting retained continuation ${round}`);
+        let answer: string;
+        try {
+          answer = await worker.run({
+            traceId: round === 1 ? `${traceId}_completion_recovery` : `${traceId}_completion_recovery_${round}`,
+            modelId: parsed.modelId,
+            reasoning: parsed.options.reasoning,
+            capabilities: turnCapabilities,
+            prepare: continuationPrepared,
+            prepareResume: continuationPrepared,
+            retainConversation: true,
+            requireRetainedConversation: true,
+            conversationKey,
+            abortSignal: browserAbort.signal,
+            ...browserCallbacks,
+            externalProgress,
+            completionFence,
+          });
+        } catch (error) {
+          await healOverspentConversation(error, conversationKey);
+          throw error;
+        }
+        // A terminal call can resolve a moment after the round's DOM settles; give the
+        // completion race a short window to claim the turn before continuing the loop.
+        for (let wait = 0; wait < 12 && !terminalAccepted && !browserAbort.signal.aborted; wait += 1) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        if (browserAbort.signal.aborted || terminalAccepted) return answer;
+        if (isRepeatedStatus(previousRoundText, answer)) {
+          console.warn(`[chatgpt-web] browser turn ${traceId} continuation ${round} repeated the previous status; handing the settled text to auto-completion`);
+          return answer;
+        }
+        projectedTokens += estimateTokens(answer, parsed.modelId);
+        if (budgetExhausted) {
+          console.warn(`[chatgpt-web] browser turn ${traceId} continuation ${round} used the context budget (${
+            projectedTokens} >= ${yieldAtTokens}); yielding the turn so Codex can compact at its boundary`);
+          return answer;
+        }
+        trace.push({ kind: "commentary" as const, text: answer });
+        previousRoundText = answer;
+      }
+      return previousRoundText;
+    };
+    const browserTurn = cancellableBrowserTurn(trackBrowserOwner(runBrowserSequence()), browserAbort);
     void browserTurn.browser.catch(error => {
       if (!tokenSettled) {
         tokenSettled = true;
         token.reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
-    const explicitCompletion = token.promise.then(turnToken => Promise.race([
-      broker.waitForCompletion(turnToken),
-      browserTurn.browser.then(() => {
-        throw new ChatGptWebAdapterError(
-          "ChatGPT ended the response without confirming that the requested Codex work was complete. Retry the task; progress text was not accepted as a final answer.",
-          {
-            status: 502,
-            errorType: "server_error",
-            code: "chatgpt_completion_not_confirmed",
-            retryable: false,
-          },
-        );
-      }),
-    ])).then(answer => {
-      text.push(answer);
-      // Completion is authoritative; the browser no longer needs to render another assistant
-      // message after the connector returns its acknowledgement.
-      browserTurn.cancel();
-      return answer;
-    });
-    const terminalBrowser = explicitCompletionRequired ? explicitCompletion : browserTurn.browser;
-    // Keep the unused branch observed: only one terminal contract owns this runtime.
-    if (!explicitCompletionRequired) void explicitCompletion.catch(() => {});
+    const explicitCompletion = explicitCompletionRequired
+      ? token.promise.then(turnToken => Promise.race([
+        broker.waitForCompletion(turnToken),
+        browserTurn.browser.then(async finalText => {
+          // ChatGPT sometimes finishes with complete DOM text yet never calls codex_turn_complete.
+          // Accept that text as the answer only when the broker's own guards (pending invocations,
+          // empty text, retired token) pass; otherwise keep the explicit-completion contract strict.
+          try {
+            await broker.completeTurn(turnToken, finalText);
+          } catch (reason) {
+            console.warn(`[chatgpt-web] browser turn ${traceId} auto-completion refused: ${reason instanceof Error ? reason.message : String(reason)}`);
+            throw new ChatGptWebAdapterError(
+              "ChatGPT ended the response without confirming that the requested Codex work was complete. Retry the task; progress text was not accepted as a final answer.",
+              {
+                status: 502,
+                errorType: "server_error",
+                code: "chatgpt_completion_not_confirmed",
+                retryable: false,
+              },
+            );
+          }
+          console.warn(`[chatgpt-web] browser turn ${traceId} auto-completed from final DOM text after codex_turn_complete was never called`);
+          return finalText;
+        }),
+      ])).then(answer => {
+        terminalAccepted = true;
+        text.push(answer);
+        // Completion is authoritative; the browser no longer needs to render another assistant
+        // message after the connector returns its acknowledgement.
+        browserTurn.cancel();
+        return answer;
+      })
+      : undefined;
+    const terminalBrowser = explicitCompletion ?? browserTurn.browser;
     return {
       mode: "tools",
       token: token.promise,
@@ -1253,8 +1550,21 @@ export function createChatGptWebAdapter(
                 if (results.length !== outstanding.length) {
                   throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
                 }
-                for (const message of results) {
-                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+                // A launcher-retained turn keeps driving the same browser conversation across every
+                // Codex request, so this is the last point where the model can still be redirected
+                // from another tool round to a handoff the next turn can resume from.
+                const delivered = results.map(message => ({ message, result: brokerResult(message) }));
+                const budgetExhausted = session.runtime.conversationKey !== undefined
+                  && contextBudgetExhausted(
+                    currentUsageInput(parsed), turnCapabilities, experimentalBiggerContext,
+                    delivered.reduce((total, { message }) =>
+                      total + estimateTokens(toolResultText(message), parsed.modelId), 0),
+                  );
+                if (budgetExhausted) {
+                  delivered.at(-1)!.result.content.push({ type: "text", text: CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION });
+                }
+                for (const { message, result } of delivered) {
+                  await broker.completeTool(turnToken, message.toolCallId, result);
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
                 }

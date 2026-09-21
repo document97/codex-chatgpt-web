@@ -914,7 +914,7 @@ test("a Codex retry after tab cancellation receives terminal HTTP 400 without a 
   }
 });
 
-test("a restart recovery turn without a new user instruction fails terminally instead of replaying the stopped prompt", async () => {
+test("a restart recovery turn whose older instruction was never delivered reaches the adapter for classification", async () => {
   const config = defaultConfig("browser-only");
   const previousTurnId = "turn_before_codex_restart";
   const recoveryTurnId = "turn_after_codex_restart";
@@ -944,24 +944,18 @@ test("a restart recovery turn without a new user instruction fails terminally in
   };
   let adapterConstructions = 0;
 
-  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+  // The older-turn instruction is a resume or an edited resubmit; only the adapter's retained
+  // instruction ledger can tell those apart, so the request must reach it instead of failing as
+  // revision metadata corruption. The probe factory's throw propagates out of the handler.
+  await expect(responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   }), config, () => {
     adapterConstructions += 1;
-    throw new Error("a context-only recovery turn must not construct a browser adapter");
-  });
-
-  expect(response.status).toBe(400);
-  expect(await response.json()).toEqual({
-    error: {
-      code: "invalid_request_error",
-      type: "invalid_request_error",
-      message: "ChatGPT web current user message conflicts with native Codex turn_id metadata",
-    },
-  });
-  expect(adapterConstructions).toBe(0);
+    throw new Error("recovery turn reached the browser adapter for ledger classification");
+  })).rejects.toThrow("recovery turn reached the browser adapter for ledger classification");
+  expect(adapterConstructions).toBe(1);
 });
 
 test.each(["alpha/search", "images/generations"])("authenticated lifecycle control aborts active %s before acknowledging cancellation", async path => {

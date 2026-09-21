@@ -613,7 +613,7 @@ export async function runChatGptMcpServer(options: {
     "codex_exec",
     {
       title: "Run a native Codex command",
-      description: afterSafeStart(contract, "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id."),
+      description: afterSafeStart(contract, "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id. On Windows, write large scripts using codex_apply_patch, then run the saved file with a short command: long-path support does not increase command-line limits. Specify a known existing workdir."),
       inputSchema: {
         ...turnReferenceInput(contract),
         cmd: z.string().min(1).max(100_000),

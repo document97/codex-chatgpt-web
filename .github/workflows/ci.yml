@@ -3,7 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "README.ja.md"
+      - "README.ko.md"
   pull_request:
+    paths-ignore:
+      - "README.md"
+      - "README.zh-CN.md"
+      - "README.ja.md"
+      - "README.ko.md"
 
 permissions:
   contents: read

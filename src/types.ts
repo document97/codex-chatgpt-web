@@ -297,6 +297,11 @@ export interface CodexProviderConfig {
     instructionLedgerStatePath?: string;
     /** Persisted cumulative inline spend per retained browser conversation (composer boundary). */
     inlineBudgetStatePath?: string;
+    /**
+     * P4 merged per-conversation state file (conversations.jsonl). Derived from the legacy state
+     * paths when absent; the legacy paths above remain one-time migration sources only.
+     */
+    conversationStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /**

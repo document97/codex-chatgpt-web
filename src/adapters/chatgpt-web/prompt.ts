@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   chatGptWebImageTokenReserve,
+  CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebTransportLimits,
@@ -1190,6 +1191,20 @@ export function compileChatGptWebPrompt(
       ? ""
       : withoutRetiredTurnHandles(JSON.stringify({ version: 3, system, messages }));
     if (contextAttachment) {
+      // R5/P5: a whole-context attachment estimated past the measured single-file ceiling cannot
+      // reach the model, so fail the turn with an explicit /compact directive instead of letting
+      // the browser send a message ChatGPT silently truncates or refuses. Compaction rounds stay
+      // exempt: the shrink loop must still deliver their summaries at all costs.
+      if (parsed._compactionRequest !== true) {
+        const attachmentTokens = estimateTokens(envelopeJson, parsed.modelId);
+        if (attachmentTokens > CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT) {
+          throw new ChatGptWebAdapterError(
+            `This task history needs about ${attachmentTokens.toLocaleString("en-US")} input tokens, which exceeds the measured`
+            + " 82,000-token ceiling for one ChatGPT attachment file. Run /compact, then retry this Web model.",
+            { status: 413, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+          );
+        }
+      }
       files.push({
         ref: CONTEXT_FILE_REF,
         name: "codex-context.json",

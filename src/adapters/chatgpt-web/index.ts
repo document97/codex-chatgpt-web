@@ -30,8 +30,11 @@ import {
   extractChatGptTurnIdentity,
   priorChatGptAbortedTurnIds,
 } from "./environment";
-import { ChatGptRetainedInstructionLedger } from "./instruction-ledger";
-import { ChatGptInlineBudgetLedger } from "./inline-budget";
+import {
+  ChatGptConversationState,
+  conversationStatePath,
+  sharedConversationStateFile,
+} from "./conversation-state";
 import { compiledChatGptWebMessages } from "./input-tokens";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT, CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION, chatGptLatestUserRequestLines, chatGptLatestUserRequestText, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
@@ -471,17 +474,44 @@ export function createChatGptWebAdapter(
       ? resolve(expandUserPath(provider.chatgptWeb.browserHostDescriptorPath))
       : undefined;
   /**
+   * P4: one conversations.jsonl file owns the per-conversation facts the bridge used to scatter
+   * across instruction-ledger.json, inline-budget.json, and thread-environments.json. The rollout
+   * jsonl stays the single history authority; this file is a rebuildable cache.
+   */
+  const legacyStatePaths = {
+    instructionLedger: provider.chatgptWeb?.instructionLedgerStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.instructionLedgerStatePath))
+      : undefined,
+    inlineBudget: provider.chatgptWeb?.inlineBudgetStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.inlineBudgetStatePath))
+      : undefined,
+    threadEnvironment: provider.chatgptWeb?.threadEnvironmentStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.threadEnvironmentStatePath))
+      : undefined,
+  };
+  const conversationStateFile = sharedConversationStateFile(
+    provider.chatgptWeb?.conversationStatePath
+      ? resolve(expandUserPath(provider.chatgptWeb.conversationStatePath))
+      : conversationStatePath(
+        legacyStatePaths.instructionLedger
+          ?? legacyStatePaths.inlineBudget
+          ?? legacyStatePaths.threadEnvironment,
+      ),
+    {
+      instructionLedger: legacyStatePaths.instructionLedger,
+      inlineBudget: legacyStatePaths.inlineBudget,
+      threadEnvironment: legacyStatePaths.threadEnvironment,
+    },
+  );
+  const conversationState = new ChatGptConversationState(conversationStateFile);
+  /**
    * Inline tokens already spent per retained browser conversation, persisted so a restarted
    * daemon does not restage fresh inline bulk into a Temporary Chat the launcher kept alive.
    * ChatGPT's composer boundary is cumulative per conversation; once the allowance is spent,
    * bulk content travels as a generated attachment instead. Accounting is recorded optimistically
    * at compile time, which only ever forces attachments.
    */
-  const inlineBudget = new ChatGptInlineBudgetLedger(
-    provider.chatgptWeb?.inlineBudgetStatePath
-      ? resolve(expandUserPath(provider.chatgptWeb.inlineBudgetStatePath))
-      : undefined,
-  );
+  const inlineBudget = conversationState;
   const remainingInlineTokens = (conversationKey: string): number | undefined => {
     const sent = inlineBudget.spent(conversationKey);
     return sent === undefined
@@ -498,17 +528,13 @@ export function createChatGptWebAdapter(
     if (conversationKey === undefined) return;
     if (!(error instanceof ChatGptWebAdapterError) || error.code !== "context_length_exceeded"
       || !error.message.startsWith("ChatGPT rejected this browser message as too long")) return;
-    inlineBudget.record(conversationKey, CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT);
+    inlineBudget.recordInlineSpend(conversationKey, CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT);
     if (retainedLauncherDescriptor) {
       await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey).catch(() => undefined);
     }
     console.warn(`[chatgpt-web] browser conversation ${conversationKey.slice(0, 8)} was rejected as too long; marked spent and released so the retry rides a fresh attachment-transport conversation`);
   };
-  const instructionLedger = new ChatGptRetainedInstructionLedger(
-    provider.chatgptWeb?.instructionLedgerStatePath
-      ? resolve(expandUserPath(provider.chatgptWeb.instructionLedgerStatePath))
-      : undefined,
-  );
+  const instructionLedger = conversationState;
   if (manualInteraction) {
     if (!configuredCapabilities.localToolsEnabled) {
       throw new Error("ChatGPT Zero Risk requires the Full Codex harness");
@@ -591,6 +617,24 @@ export function createChatGptWebAdapter(
       ? resumeNudgeRequest(checkpointInput.parsed)
       : undefined;
     const retainConversation = conversationKey !== undefined;
+    if (conversationKey !== undefined) {
+      // Stamp the §4.6 per-conversation identity so the merged record knows which Codex thread,
+      // browser model, reasoning effort, and compaction epoch own this key.
+      const rawInput = checkpointInput.parsed._rawBody as { input?: unknown[] } | undefined;
+      const compactionMarker = rawInput?.input?.findLast(item => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+        const record = item as Record<string, unknown>;
+        return record.type === "compaction"
+          || record.type === "compaction_summary"
+          || record.type === "context_compaction";
+      }) ?? null;
+      conversationState.annotate(conversationKey, {
+        ...(identity.threadId ? { threadId: identity.threadId } : {}),
+        modelId: checkpointInput.parsed.modelId,
+        reasoning: checkpointInput.parsed.options.reasoning,
+        compactionEpoch: compactionMarker,
+      });
+    }
     const releaseRetainedConversation = conversationKey && retainedLauncherDescriptor
       ? async () => {
         await releaseLauncherRetainedConversation(retainedLauncherDescriptor, conversationKey);
@@ -908,7 +952,7 @@ export function createChatGptWebAdapter(
         if (conversationKey !== undefined) {
           // Multipart stages carry the bulk inline, so the spend is every visible browser
           // message of this compile — not just the commit text the single-message shape has.
-          inlineBudget.record(
+          inlineBudget.recordInlineSpend(
             conversationKey,
             compiledChatGptWebMessages(compiled)
               .reduce((total, text) => total + estimateTokens(text, input.modelId), 0),
@@ -1028,7 +1072,7 @@ export function createChatGptWebAdapter(
         // Continuation rounds bypass prepareWith, so their inline spend joins the same
         // per-conversation ledger the seeded and resumed messages use.
         if (conversationKey !== undefined) {
-          inlineBudget.record(conversationKey, estimateTokens(continuationText, parsed.modelId));
+          inlineBudget.recordInlineSpend(conversationKey, estimateTokens(continuationText, parsed.modelId));
         }
         console.warn(`[chatgpt-web] browser turn ${traceId} ended without codex_turn_complete; requesting retained continuation ${round}`);
         let answer: string;

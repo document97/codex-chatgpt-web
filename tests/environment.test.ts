@@ -7,6 +7,7 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../sr
 import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
+import { conversationStatePath } from "../src/adapters/chatgpt-web/conversation-state";
 import type { CodexParsedRequest, CodexTool } from "../src/types";
 
 const root = resolve(process.cwd());
@@ -573,7 +574,8 @@ describe("trusted Codex task environment continuity", () => {
     first.context.tools = firstTools;
 
     expect(new ChatGptThreadEnvironmentStore(statePath).resolve(first).tools).toEqual(firstTools);
-    const onDisk = readFileSync(statePath, "utf8");
+    // P4: trusted authority rides conversations.jsonl beside the legacy state path.
+    const onDisk = readFileSync(conversationStatePath(statePath)!, "utf8");
     expect(onDisk).toContain('"thread_current"');
     expect(onDisk).not.toContain("first_tool");
 

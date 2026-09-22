@@ -55,6 +55,13 @@ export const CHATGPT_WEB_PLUS_MESSAGE_TOKEN_LIMIT = 40_000;
  * tokens in one accepted turn and does not ride this boundary).
  */
 export const CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT = 90_000;
+/**
+ * Measured Plus-account ceiling for one generated whole-context attachment file: 82,337
+ * estimated tokens rode one accepted turn (see the transport boundary notes above). Bulk that
+ * estimates past this mark cannot reach the model as a file, so the bridge must fail the turn
+ * with an explicit /compact directive instead of sending it blind (rewrite R5/P5).
+ */
+export const CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT = 82_000;
 /** Hidden ChatGPT product prompt and Codex Native schema reserve included in usage estimates. */
 export const CHATGPT_WEB_PLATFORM_RESERVE_TOKENS = 8_192;
 /**

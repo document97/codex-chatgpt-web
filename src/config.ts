@@ -590,6 +590,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
       instructionLedgerStatePath: join(getConfigDir(), "runtime", "instruction-ledger.json"),
       inlineBudgetStatePath: join(getConfigDir(), "runtime", "inline-budget.json"),
+      conversationStatePath: join(getConfigDir(), "runtime", "conversations.jsonl"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
       explicitCompletion: config.mode === "full" && config.browserInteractionMode === "automatic",

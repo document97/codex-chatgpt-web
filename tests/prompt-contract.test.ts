@@ -953,6 +953,50 @@ test("R5: attachment transport without a determinable latest human request fails
   });
 });
 
+test("P5: a whole-context attachment past the measured single-file ceiling fails with an explicit /compact directive", () => {
+  const large = request("high");
+  large.context.messages = Array.from({ length: 12 }, (_, index) => ({
+    role: "user" as const,
+    content: `record-${index}:${"x".repeat(60_000)}`,
+    timestamp: index + 1,
+  }));
+
+  let failure: unknown;
+  try {
+    compileChatGptWebPrompt(
+      large,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "turn_12345678901234567890123456789012",
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 413,
+    code: "context_length_exceeded",
+    retryable: false,
+  });
+  expect(String((failure as Error).message)).toContain("/compact");
+});
+
+test("R1: Luna turns also pin the verbatim latest human request at the tail", () => {
+  const parsed = request("low");
+  parsed.modelId = CHATGPT_WEB_LUNA_MODEL_ID;
+  parsed.context.messages.push({ role: "user", content: "summarize the rollout", timestamp: 5 });
+  const compiled = compileChatGptWebPrompt(
+    parsed,
+    { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false },
+    undefined,
+    { captureLunaCheckpoint: true },
+  );
+
+  expect(compiled.text).toContain("<codex_latest_user_request>");
+  const r1 = compiled.text.slice(compiled.text.indexOf("<codex_latest_user_request>"));
+  expect(r1).toContain("summarize the rollout");
+  expect(compiled.text.trimEnd().endsWith("</codex_latest_user_request>")).toBe(true);
+});
+
 test("P3: transcript transport renders ### role sections with a converged contract", () => {
   const parsed = request("high");
   parsed.context.systemPrompt = ["system-rules"];

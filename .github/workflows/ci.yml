@@ -17,6 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macos-15-intel verifies the Intel macOS (mac-x64) build promised in the README download table.
         os: [macos-15, macos-15-intel, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:

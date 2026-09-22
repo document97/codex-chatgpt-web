@@ -1,11 +1,9 @@
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">すべてのリリース</a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">すべてのリリース</a>
 </p>
 
 <p align="center">
@@ -37,7 +35,7 @@ Full ハーネスモードでは、MCP を通じて ChatGPT を現在のタス�
 
 ブラウザーとランタイムはアプリに含まれています。Chrome、Node、Bun の別途インストールは不要です。
 
-> **プラットフォームについて:** 自動化 CI が検証するのは Windows（x64）、Linux（x64）、Apple Silicon（arm64）の macOS です。Intel（x64）の macOS は CI 検証の対象外です。
+> **プラットフォームについて:** 自動化 CI が検証するのは Windows（x64）、Linux（x64）、Apple Silicon（arm64）の macOS です。Intel（x64）の macOS は CI 検証の対象外です。リリースは Windows インストーラーのみを公開します。macOS / Linux では bun run app:package でソースからビルドしてください。
 
 <details>
 <summary><strong>ターミナルからのインストール・更新・修復</strong></summary>

@@ -1,11 +1,9 @@
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">All releases</a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">All releases</a>
 </p>
 
 <p align="center">
@@ -37,7 +35,7 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 
-> **Platform note:** Automated CI verifies Windows (x64), Linux (x64), and macOS on Apple Silicon (arm64). macOS on Intel (x64) is not covered by CI verification.
+> **Platform note:** Automated CI verifies Windows (x64), Linux (x64), and macOS on Apple Silicon (arm64). macOS on Intel (x64) is not covered by CI verification. Releases publish the Windows installer only — on macOS/Linux, build from source with bun run app:package.
 
 <details>
 

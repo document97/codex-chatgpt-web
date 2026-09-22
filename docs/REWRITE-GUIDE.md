@@ -284,14 +284,16 @@ Codex 请求到达 (/v1/responses)
 
 | 阶段 | 登记内容 | 状态 |
 |---|---|---|
-| P1 | `prompt.ts`：R1 选择器跳过压缩摘要（`isReadableCompactionSummaryText`）；导出 `chatGptLatestUserRequestText`/`chatGptLatestUserRequestLines`；新增编译选项 `latestUserRequest`（override/suppress）；附件降级时 R1 缺失 -> 报错（R5 前半）。`index.ts`：resume nudge 与 recovery 续跑正文携带 R1 段（取全量历史的最新人类指令）。`tests/prompt-contract.test.ts` 新增 6 个用例。 | 进行中 |
-| P2 | `browser-worker.ts`：aborted 且 `retainConversation` 时 end 通知带 retain；续用时若 lease 标记 `lastGenerationAbortedAt` 则先等残留生成收尾（60s 宽限）。`launcher/electron/browser-host.cjs`：endTurn 支持 aborted+retain（标记 lastGenerationAbortedAt），beginTurn 租约返回该标记。`launcher-browser-host.ts`：租约类型扩展。`index.ts`：recovery 上限注释与日志。 | 未开始 |
-| P3 | `types.ts`/`config.ts`/`prompt.ts`/`index.ts`：`transcriptTransport` flag（默认关）；转录式 `<codex_context_transcript>` 渲染 + 契约收敛 <=25 行。 | 未开始 |
-| P4 | 新增 `conversation-state.ts`（conversations.jsonl，追加写、损坏即重建，合并 instruction-ledger/inline-budget/thread-environment，启动迁移旧文件）；`state.ts` 收缩（链式存储去平方增长、8MB 上限、rollout 重放回退）；`codex-rollout-environment.ts` 导出 rollout 重放。 | 未开始 |
-| P5 | `prompt.ts`：附件载荷估算超 ~82k token 容量 -> context_length_exceeded 明确要求 /compact（R5 后半）。 | 未开始 |
+| P1 | `prompt.ts`：R1 选择器跳过压缩摘要（`isReadableCompactionSummaryText`）；导出 `chatGptLatestUserRequestText`/`chatGptLatestUserRequestLines`；新增编译选项 `latestUserRequest`（override/suppress）；附件降级时 R1 缺失 -> 报错（R5 前半）。`index.ts`：resume nudge 与 recovery 续跑正文携带 R1 段（取全量历史的最新人类指令）。`tests/prompt-contract.test.ts` 新增 6 个用例。 | 已完成 |
+| P2 | `browser-worker.ts`：aborted 且 `retainConversation` 时 end 通知带 retain；续用时若 lease 标记 `lastGenerationAbortedAt` 则先等残留生成收尾（60s 宽限）。`launcher/electron/browser-host.cjs`：endTurn 支持 aborted+retain（标记 lastGenerationAbortedAt），beginTurn 租约返回该标记。`launcher-browser-host.ts`：租约类型扩展。`index.ts`：recovery 上限注释与日志。 | 已完成（合入 023b3eb） |
+| P3 | `types.ts`/`config.ts`/`prompt.ts`/`index.ts`：`transcriptTransport` flag（默认关）；转录式 `<codex_context_transcript>` 渲染 + 契约收敛 <=25 行。 | 已完成（合入 023b3eb） |
+| P4 | 新增 `conversation-state.ts`（conversations.jsonl，追加写、损坏即重建，合并 instruction-ledger/inline-budget/thread-environment，启动迁移旧文件）；`state.ts` 收缩（链式存储去平方增长、8MB 上限、rollout 重放回退）；`codex-rollout-environment.ts` 导出 rollout 重放。 | 已完成（合入 93b0a57） |
+| P5 | `prompt.ts`：附件载荷估算超 ~82k token 容量 -> context_length_exceeded 明确要求 /compact（R5 后半）。 | 已完成（合入 93b0a57） |
+
+**验证结果（§6）**：`bun test ./tests` 全套件 775 测试 / 773 通过（2 个失败为 Windows 符号链接 EPERM 环境问题，预存、与本改动无关）；`bun run typecheck` 通过；launcher 侧 `bun test` 103 通过。`smoke:*` 脚本需实机 Codex 桌面端 + 已登录 ChatGPT 会话，本执行环境不可跑，列为发布前手工步骤。
 
 
 | P1+P2+P3 | 提交 023b3eb（994 行）：R1 五处落地 + 打断不释放 + recovery 上限 + transcriptTransport flag（默认关）。全套件 767 测试零失败。 | 已完成 |
-| P4 | `conversation-state.ts`（新建，conversations.jsonl 追加写/损坏即重建/限界压缩，路径 memo 化共享，启动时一次性迁移旧三文件）；`instruction-ledger.ts`/`inline-budget.ts` 删除，语义并入 `ChatGptConversationState`；`thread-environment.ts` 类 API 不变、存储改为 JSONL；`state.ts` 改为链式存储（线性字节）、8MB 上限、30min TTL 带链父保护、展开丢失时 rollout jsonl 重放回退（尾部匹配才生效）。 | 进行中 |
-| P5 | `chatgpt-web-models.ts` 新增 `CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT = 82_000`（实测 82,337 命名常数，未改动既有常数）；附件载荷估算超限 -> 413 `context_length_exceeded` 明确要求 /compact，非压缩轮生效。 | 进行中 |
+| P4 | `conversation-state.ts`（新建，conversations.jsonl 追加写/损坏即重建/限界压缩，路径 memo 化共享，启动时一次性迁移旧三文件）；`instruction-ledger.ts`/`inline-budget.ts` 删除，语义并入 `ChatGptConversationState`；`thread-environment.ts` 类 API 不变、存储改为 JSONL；`state.ts` 改为链式存储（线性字节）、8MB 上限、30min TTL 带链父保护、展开丢失时 rollout jsonl 重放回退（尾部匹配才生效）。 | 已完成 |
+| P5 | `chatgpt-web-models.ts` 新增 `CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT = 82_000`（实测 82,337 命名常数，未改动既有常数）；附件载荷估算超限 -> 413 `context_length_exceeded` 明确要求 /compact，非压缩轮生效。 | 已完成 |
 

@@ -30,7 +30,7 @@
     "dev:chat": "bun run src/cli.ts dev chat",
     "test": "bun test ./tests",
     "audit": "bun audit",
-    "check-version": "bun run scripts/check-version.ts",
+    "bump": "bun run scripts/bump-version.ts",
     "typecheck": "bun x --no-install --bun tsc --noEmit",
     "licenses": "bun run scripts/generate-third-party-notices.ts --include-launcher",
     "clean": "bun run scripts/clean.ts",

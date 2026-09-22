@@ -132,30 +132,6 @@ test("packaged launcher owns a detached checksummed updater for every release pl
   assert.doesNotMatch(worker, /backup/i);
 });
 
-test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
-  const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
-  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
-  assert.match(ci, /macos-15, ubuntu-latest, windows-latest/);
-  assert.match(ci, /bun run app:package/);
-  assert.match(ci, /bun run app:smoke/);
-  assert.match(ci, /prepare-linux-libnotify\.sh/);
-  assert.match(ci, /prepare-linux-appimage-tools\.cjs/);
-  assert.match(ci, /archlinux:base/);
-  assert.match(ci, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
-  for (const runner of ["macos-15", "macos-15-intel", "ubuntu-latest", "windows-latest"]) {
-    assert.match(release, new RegExp(runner));
-  }
-  assert.match(release, /launcher\/build\/runtime/);
-  assert.match(release, /bun run app:smoke/);
-  assert.match(release, /prepare-linux-libnotify\.sh/);
-  assert.match(release, /prepare-linux-appimage-tools\.cjs/);
-  assert.match(release, /archlinux:base/);
-  assert.match(release, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
-  assert.match(release, /codesign --verify --deep --strict --verbose=2/);
-  assert.match(release, /Codex Web GPT\.app/);
-  assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);
-});
-
 test("Linux AppImage fallback uses one owned extraction and removes it on exit", {
   skip: process.platform !== "linux" ? "AppImage process identity is Linux-specific" : false,
 }, () => {

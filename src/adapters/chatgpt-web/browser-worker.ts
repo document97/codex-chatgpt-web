@@ -2862,6 +2862,40 @@ export class ChatGptBrowserWorker {
     };
   }
 
+  /**
+   * A retained conversation whose last generation was aborted may still be streaming the orphaned
+   * ChatGPT answer in the background. Typing the new instruction while the stop button is visible
+   * would interleave with that answer, so reuse waits the residual generation out inside the
+   * ordinary response grace (60s), then proceeds regardless — the composer itself stays disabled
+   * by ChatGPT only while streaming.
+   */
+  private async waitForResidualGeneration(page: Page, signal?: AbortSignal): Promise<void> {
+    const deadline = Date.now() + CHATGPT_RESPONSE_DOM_GRACE_MS;
+    const domCache: ChatGptSubmissionDomCache = {};
+    let observedRunning = false;
+    for (;;) {
+      if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+      try {
+        const state = await this.submissionDomState(page, domCache, signal);
+        if (state.visibleStopButtonCount === 0) {
+          if (observedRunning) {
+            console.info("[chatgpt-web] residual ChatGPT generation settled before the retained conversation was reused");
+          }
+          return;
+        }
+        observedRunning = true;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        // Observation hiccups share the same grace budget as the residual generation itself.
+      }
+      if (Date.now() >= deadline) {
+        console.warn("[chatgpt-web] retained conversation still shows a running generation after the reuse grace; sending the new instruction anyway");
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1_000));
+    }
+  }
+
   private async waitForNewAssistantTurn(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
@@ -4370,7 +4404,13 @@ export class ChatGptBrowserWorker {
       await turn.onPreparedSelected?.(reused);
       heartbeatTimer = setInterval(sendHeartbeat, LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS);
       heartbeatTimer.unref?.();
-      return await this.runBrowserTurn(turn, surfaceId, undefined, reused);
+      return await this.runBrowserTurn(
+        turn,
+        surfaceId,
+        undefined,
+        reused,
+        reused && typeof lease.lastGenerationAbortedAt === "number",
+      );
     } catch (error) {
       originalError = error;
       terminal = error instanceof ChatGptCompactionHandoffAccepted
@@ -4390,7 +4430,10 @@ export class ChatGptBrowserWorker {
           helperPid: process.pid,
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
-          ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
+          // R2: an interrupted Codex turn must not release the retained browser conversation.
+          // Keeping it lets the next instruction ride the incremental resume path instead of
+          // reseeding the whole history (and burying that instruction) into a fresh chat.
+          ...((terminal === "completed" || terminal === "aborted") && turn.retainConversation ? { retain: true } : {}),
           ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
             ? { connectorBound: true }
             : {}),
@@ -4413,6 +4456,7 @@ export class ChatGptBrowserWorker {
     launcherSurfaceId?: string,
     maintenancePage?: Page,
     reuseConversation = false,
+    residualGenerationExpected = false,
   ): Promise<string> {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     if ((turn.externalProgress !== undefined) !== (turn.completionFence !== undefined)) {
@@ -4778,6 +4822,12 @@ export class ChatGptBrowserWorker {
         finalPrompt = multipartFinalPrompt;
       }
 
+      if (reuseConversation && residualGenerationExpected) {
+        // The launcher kept this conversation after an interrupt; never type over a ChatGPT
+        // answer that is still streaming from the aborted turn.
+        await this.waitForResidualGeneration(page, turn.abortSignal);
+        await diagnostics.capture(page, "residual-generation-settled");
+      }
       let submissionBaseline = await this.captureSubmissionBaseline(page);
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };

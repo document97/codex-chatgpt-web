@@ -2679,6 +2679,76 @@ test("failed and aborted browser turns release their tab slots", async () => {
   }
 });
 
+test("an aborted turn with retain keeps its conversation and hands the abort marker to the next lease", async () => {
+  const closed = [];
+  const tab = {
+    id: "tab-aborted-retain",
+    surfaceId: "surface-aborted-retain",
+    traceId: "trace_aborted_retain",
+    conversationKey: "a".repeat(64),
+    interactionMode: "automatic",
+    helperPid: 777,
+    status: "running",
+    loading: true,
+    view: { webContents: {
+      isDestroyed: () => false,
+      setBackgroundThrottling() {},
+      close: () => closed.push(true),
+    } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    manualOperation: null,
+    selectedTabId: tab.id,
+    window: { contentView: { removeChildView() {} } },
+    syncViewVisibility() {},
+    writeDescriptor() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    hide() {},
+    show() {},
+    logger: { info() {}, warn() {} },
+  });
+
+  // An interrupted turn that asks to retain keeps the tab ready and records the abort marker
+  // instead of releasing the conversation.
+  await BrowserHost.prototype.endTurn.call(
+    fixture,
+    tab.traceId,
+    tab.helperPid,
+    "aborted",
+    true,
+    "interrupted",
+    true,
+  );
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.status, "ready");
+  assert.equal(Number.isFinite(tab.lastGenerationAbortedAt), true);
+  assert.equal(closed.length, 0);
+
+  // The next lease reuses the conversation, receives the marker exactly once, and clears it.
+  const lease = await fixture.beginTurn("trace_next", false, 888, tab.conversationKey, undefined);
+  assert.equal(lease.reused, true);
+  assert.equal(lease.surfaceId, "surface-aborted-retain");
+  assert.equal(Number.isFinite(lease.lastGenerationAbortedAt), true);
+  assert.equal(tab.lastGenerationAbortedAt, undefined);
+  const second = await fixture.beginTurn("trace_next", false, 888, tab.conversationKey, undefined);
+  assert.equal("lastGenerationAbortedAt" in second, false);
+
+  // A normal completion retains without resurrecting the marker.
+  await BrowserHost.prototype.endTurn.call(fixture, "trace_next", 888, "completed", true, undefined, true);
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.lastGenerationAbortedAt, undefined);
+
+  // An aborted turn without retain still releases the tab slot.
+  await fixture.beginTurn("trace_final", false, 999, tab.conversationKey, undefined);
+  await BrowserHost.prototype.endTurn.call(fixture, "trace_final", 999, "aborted", true, "interrupted");
+  assert.equal(fixture.turnTabs.has(tab.id), false);
+  assert.equal(closed.length, 1);
+});
+
 function manualTurnFixture() {
   const clipboardWrites = [];
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {

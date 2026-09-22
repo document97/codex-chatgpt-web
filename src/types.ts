@@ -321,5 +321,11 @@ export interface CodexProviderConfig {
     autoApproveToolCalls?: boolean;
     /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
     experimentalBiggerContext?: boolean;
+    /**
+     * DEV-only experimental transport (rewrite P3): replace the JSON context envelope with a
+     * `### User / ### Assistant` transcript plus a converged static contract. Default off until
+     * A/B validation.
+     */
+    transcriptTransport?: boolean;
   };
 }

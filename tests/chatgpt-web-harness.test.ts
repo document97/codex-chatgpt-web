@@ -2648,8 +2648,8 @@ describe("ChatGPT outer-native harness v4", () => {
       };
       const events: AdapterEvent[] = [];
       await createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml), { headers: new Headers() }, event => events.push(event));
-      // Rounds 3 and 4 repeat "Nothing left to do for now." → the loop stops at round 4.
-      expect(continuations).toBe(4);
+      // Recovery is bounded to three continuation requests.
+      expect(continuations).toBe(3);
       expect(events.filter(event => event.type === "text_delta").filter(event => event.phase === "final_answer").map(event => event.text).join(""))
         .toBe("Nothing left to do for now.");
       expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });

@@ -34,7 +34,7 @@ import { ChatGptRetainedInstructionLedger } from "./instruction-ledger";
 import { ChatGptInlineBudgetLedger } from "./inline-budget";
 import { compiledChatGptWebMessages } from "./input-tokens";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT, CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
+import { CHATGPT_WEB_CONNECTOR_DISCOVERY_CONTRACT, CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION, chatGptLatestUserRequestLines, chatGptLatestUserRequestText, chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
@@ -350,11 +350,13 @@ function validateBatchTools(parsed: CodexParsedRequest, requests: BrokerToolRequ
 
 /** Keep the Responses bridge alive during every awaited phase of a browser turn. */
 export const CHATGPT_WEB_ADAPTER_HEARTBEAT_MS = 10_000;
+export const CHATGPT_WEB_MAX_COMPLETION_RECOVERY_ROUNDS = 3;
 
 function explicitCompletionRecoveryPrompt(
   turnToken: string,
   previousText?: string,
   contextBudgetExhausted = false,
+  latestUserRequest?: string,
 ): string {
   // Assistant-side prefill is not available on the ChatGPT surface; quoting the model's own
   // closing text into the continuation request reproduces the prefill's pull into mid-task mode.
@@ -373,6 +375,10 @@ function explicitCompletionRecoveryPrompt(
       ]),
     "Do not reply with an ordinary progress message. The terminal tool is required. Repeating your previous answer as plain text is not a valid outcome.",
     `Pass turn_token ${turnToken} unchanged to every Codex Native call in this response and do not expose it in the answer.`,
+    // R1: a bare nudge is forbidden — every recovery round re-anchors the verbatim latest human
+    // request at the end of the visible message, so a retained conversation never drifts back to
+    // stale instructions buried in its history.
+    ...(latestUserRequest === undefined ? [] : chatGptLatestUserRequestLines(latestUserRequest)),
   ].join("\n");
 }
 
@@ -458,6 +464,7 @@ export function createChatGptWebAdapter(
   };
   const explicitCompletionRequired = provider.chatgptWeb?.explicitCompletion === true;
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
+  const transcriptTransport = provider.chatgptWeb?.transcriptTransport === true;
   const executionNamespace = chatGptWebExecutionNamespace(provider);
   const retainedLauncherDescriptor = provider.chatgptWeb?.browserHost === "launcher"
     && provider.chatgptWeb.browserHostDescriptorPath
@@ -599,6 +606,7 @@ export function createChatGptWebAdapter(
         : undefined;
       return {
         captureLunaCheckpoint,
+        ...(transcriptTransport ? { transcriptTransport: true as const } : {}),
         ...(explicitCompletionRequired && !input._compactionRequest ? { explicitCompletion: true as const } : {}),
         ...(experimentalMultipartParts !== undefined
           ? { experimentalMultipartParts }
@@ -880,7 +888,7 @@ export function createChatGptWebAdapter(
     const externalProgress = new ChatGptExternalTurnProgress();
     let tokenSettled = false;
     let activeToken: string | undefined;
-    const prepareWith = async (input: CodexParsedRequest) => {
+    const prepareWith = async (input: CodexParsedRequest, latestUserRequest?: string | null) => {
       const turnToken = activeToken ?? await broker.register(
         environment,
         timeoutMs === undefined ? undefined : timeoutMs + 60_000,
@@ -892,7 +900,10 @@ export function createChatGptWebAdapter(
           input,
           turnCapabilities,
           turnToken,
-          compileOptionsFor(input),
+          {
+            ...compileOptionsFor(input),
+            ...(latestUserRequest !== undefined ? { latestUserRequest } : {}),
+          },
         );
         if (conversationKey !== undefined) {
           // Multipart stages carry the bulk inline, so the spend is every visible browser
@@ -947,6 +958,9 @@ export function createChatGptWebAdapter(
       },
     };
     let terminalAccepted = false;
+    // R1 anchor shared by the resume nudge and every completion-recovery round: the genuine
+    // latest human instruction from the canonical history this turn replays.
+    const latestUserRequest = chatGptLatestUserRequestText(checkpointInput.parsed.context.messages);
     const runBrowserSequence = async (): Promise<string> => {
       // An edited resubmit reuses the conversation key with history the retained conversation
       // never saw. Release the stale conversation before leasing so this turn seeds a fresh one.
@@ -966,7 +980,9 @@ export function createChatGptWebAdapter(
           capabilities: turnCapabilities,
           prepare: () => prepareWith(checkpointInput.parsed),
           ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
-          ...(resumeNudgeInput ? { prepareResume: () => prepareWith(resumeNudgeInput) } : {}),
+          // The nudge replaces the message list, so its R1 block must come from the full
+          // canonical history; suppress it entirely when no genuine instruction exists.
+          ...(resumeNudgeInput ? { prepareResume: () => prepareWith(resumeNudgeInput, latestUserRequest ?? null) } : {}),
           ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
           abortSignal: browserAbort.signal,
           ...(parsed._compactionRequest ? { compaction: true } : {}),
@@ -999,11 +1015,11 @@ export function createChatGptWebAdapter(
         : estimateChatGptWebUsage(currentUsageInput(parsed), {}, turnCapabilities, experimentalBiggerContext).inputTokens
           + estimateTokens(initialAnswer, parsed.modelId);
       // The model owns the finish line only through codex_turn_complete; the bridge owns the
-      // continuation. Rounds run until that terminal call, an idle repeat, the context budget or an
-      // abort — never a round count.
-      for (let round = 1; !browserAbort.signal.aborted && !terminalAccepted; round += 1) {
+      // continuation. Rounds run until that terminal call, an idle repeat, the context budget,
+      // an abort, or the recovery cap — an unbounded loop let a lost instruction spin forever.
+      for (let round = 1; !browserAbort.signal.aborted && !terminalAccepted && round <= CHATGPT_WEB_MAX_COMPLETION_RECOVERY_ROUNDS; round += 1) {
         const budgetExhausted = yieldAtTokens !== undefined && projectedTokens >= yieldAtTokens;
-        const continuationText = explicitCompletionRecoveryPrompt(turnToken, previousRoundText, budgetExhausted);
+        const continuationText = explicitCompletionRecoveryPrompt(turnToken, previousRoundText, budgetExhausted, latestUserRequest);
         const continuationPrepared = async () => ({
           text: continuationText,
           images: [],
@@ -1054,6 +1070,11 @@ export function createChatGptWebAdapter(
         }
         trace.push({ kind: "commentary" as const, text: answer });
         previousRoundText = answer;
+      }
+      if (!terminalAccepted && !browserAbort.signal.aborted) {
+        // The recovery cap replaces the old unbounded continuation loop: close with the last
+        // settled text (auto-completion still guards it) instead of nudging forever.
+        console.warn(`[chatgpt-web] browser turn ${traceId} reached the completion recovery limit (${CHATGPT_WEB_MAX_COMPLETION_RECOVERY_ROUNDS} rounds) without codex_turn_complete; closing with the last settled text`);
       }
       return previousRoundText;
     };

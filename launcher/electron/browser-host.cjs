@@ -2306,6 +2306,12 @@ class BrowserHost {
       this.selectedTabId = existing.id;
       if (reveal) this.show();
       else this.syncViewVisibility();
+      // Hand the aborted-generation marker to the new lease exactly once: the helper waits the
+      // residual ChatGPT generation out before typing, and the marker is consumed here.
+      const lastGenerationAbortedAt = reused && typeof existing.lastGenerationAbortedAt === "number"
+        ? existing.lastGenerationAbortedAt
+        : undefined;
+      existing.lastGenerationAbortedAt = undefined;
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       this.logger.info("browser.tab_reused", { tabId: existing.id, traceId });
@@ -2314,6 +2320,7 @@ class BrowserHost {
         tabId: existing.id,
         reused,
         connectorBound: existing.connectorBound === true,
+        ...(lastGenerationAbortedAt !== undefined ? { lastGenerationAbortedAt } : {}),
       };
     }
     if (requireRetainedConversation) {
@@ -2364,14 +2371,21 @@ class BrowserHost {
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
-    if (status === "completed"
+    // An interrupted turn keeps its retained conversation (rewrite R2): ChatGPT may still be
+    // streaming the orphaned answer, so the tab is marked with lastGenerationAbortedAt and the
+    // next lease waits the residual generation out instead of reseeding the full history into a
+    // fresh Temporary Chat. A conversation whose connector was never bound still cannot retain.
+    const retainAborted = status === "aborted" && retain === true;
+    if ((status === "completed" || retainAborted)
       && retain
       && tab.conversationKey
-      && (!tab.connectorIdentity || connectorBound)) {
-      tab.connectorBound = connectorBound === true;
+      && (!tab.connectorIdentity || connectorBound || tab.connectorBound === true)) {
+      tab.status = "ready";
+      tab.connectorBound = connectorBound === true || tab.connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
+      tab.lastGenerationAbortedAt = retainAborted ? Date.now() : undefined;
       if (hideAfterTurn && !this.activeTraceId) this.hide();
-      this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
+      this.logger.info(retainAborted ? "browser.tab_retained_after_abort" : "browser.tab_retained", { tabId: tab.id, traceId });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };

@@ -3,6 +3,16 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">全部发布</a>
+</p>
+
+<p align="center">
   <img src="assets/demo.gif" width="960" alt="ChatGPT Web 实时轮次正在使用原生 Codex harness">
 </p>
 

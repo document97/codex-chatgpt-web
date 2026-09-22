@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: macos-26
             runtime_asset: codex-chatgpt-web-darwin-arm64.tar.gz
           - runner: ubuntu-latest
             runtime_asset: codex-chatgpt-web-linux-amd64.tar.gz

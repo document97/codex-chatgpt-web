@@ -3815,24 +3815,55 @@ export class ChatGptBrowserWorker {
     return { effort: mode.displayLabel, response: CHATGPT_SMOKE_EXPECTED };
   }
 
-  private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt): Promise<void> {
+  private async attachFiles(
+    page: Page,
+    prompt: CompiledChatGptWebPrompt,
+    onRejected?: (message: string) => void,
+  ): Promise<void> {
+    const files = chatGptPromptFilePayloads(prompt);
+    if (files.length === 0) return;
     try {
-      const files = chatGptPromptFilePayloads(prompt);
-      if (files.length === 0) return;
       const composer = await this.activeComposer(page);
       const composerForm = composer.locator("xpath=ancestor::form[1]");
       const input = page.locator('input[data-testid="upload-photos-input"]');
       await input.waitFor({ state: "attached", timeout: 20_000 });
       await input.setInputFiles(files);
-      await Promise.all(files.map(file => (
+      // ChatGPT silently drops uploads it refuses (unsupported type, size, quota, plan) and often
+      // surfaces a [role=alert]. Treat every attachment chip that never appeared as rejected and
+      // keep the turn alive with the accepted remainder: the visible prompt text still names every
+      // file, so the model can fall back to local tools, and the user hears exactly what the web
+      // page reported instead of losing the whole turn to one refused audio/video file.
+      const chipResults = await Promise.allSettled(files.map(file => (
         composerForm.getByRole("group", { name: file.name, exact: true })
           .waitFor({ state: "visible", timeout: 60_000 })
       )));
+      const rejected = files.filter((_, index) => chipResults[index]?.status === "rejected");
+      if (rejected.length > 0) {
+        const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
+          .map(text => text.replace(/\s+/g, " ").trim())
+          .filter(Boolean);
+        const diagnostic = alerts.length > 0 ? ` ChatGPT reported: ${alerts.join(" | ")}.` : "";
+        const names = rejected.map(file => file.name).join(", ");
+        onRejected?.(
+          `> **Attachment upload rejected**\n>\n> ChatGPT refused: ${names}.${diagnostic} `
+          + "The turn continues without those files; their paths remain in the task context, so ask for a local-tools read if the contents are required.",
+        );
+      }
       const send = composerForm.getByTestId("send-button");
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         if (await send.isEnabled().catch(() => false)) return;
         await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
+      }
+      if (rejected.length === files.length) {
+        // Every attachment was refused and ChatGPT never made the message sendable: the visible
+        // text alone was rejected too. Surface the page's own reason instead of a generic stall.
+        const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
+          .map(text => text.replace(/\s+/g, " ").trim())
+          .filter(Boolean);
+        throw chatGptAttachmentRejectedError(
+          alerts.join(" | ") || "every attachment was refused and the message never became ready to send",
+        );
       }
       throw new Error("ChatGPT accepted the prompt attachments but did not make the message ready to send");
     } catch (error) {
@@ -4888,7 +4919,7 @@ export class ChatGptBrowserWorker {
       }
       await diagnostics.capture(page, "prompt-attachment-complete");
       await this.runStage(turn.traceId, "file_attachment", browserStageTimeouts.fileAttachment, () => (
-        this.attachFiles(page, prepared)
+        this.attachFiles(page, prepared, turn.onCommentary)
       ));
       await diagnostics.capture(page, "file-attachment-complete");
       const completionTracker = new ChatGptCompletionTracker();

@@ -942,12 +942,22 @@ export async function runChatGptMcpServer(options: {
     },
     async (input, extra) => {
       console.error(`[chatgpt-web-mcp] codex_turn_complete scope=${requestScopeSummary(extra)}`);
-      const response = await callTurnBroker<{ completed: true; duplicate: boolean }>(options.brokerSocketPath, {
-        method: contract === "safe" ? "safe_complete" : "native_complete",
-        token: turnReference(contract, input),
-        finalAnswer: input.final_answer,
-      }, null, extra.signal);
-      return result(response);
+      try {
+        const response = await callTurnBroker<{ completed: true; duplicate: boolean }>(options.brokerSocketPath, {
+          method: contract === "safe" ? "safe_complete" : "native_complete",
+          token: turnReference(contract, input),
+          finalAnswer: input.final_answer,
+        }, null, extra.signal);
+        return result(response);
+      } catch (error) {
+        // Wrap with actionable context: when the broker rejects the completion the model
+        // should fall back to a text-based answer rather than retrying a blocked tool.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `codex_turn_complete could not finalize the turn: ${message}. `
+          + "If the tool is blocked by safety classification or unavailable in this turn, provide the complete final answer as plain text instead.",
+        );
+      }
     },
   );
 

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import {
   chatGptWebImageTokenReserve,
   CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT,
@@ -256,22 +258,76 @@ function latestCodexUserRequest(
   return text === undefined ? [] : chatGptLatestUserRequestLines(text);
 }
 
+/**
+ * File types the ChatGPT web composer accepts for upload. Kept in step with the ChatGPT upload
+ * picker plus the documented Responses `input_file` list so a user attachment is attempted rather
+ * than silently dropped. Audio and video are browser/plan dependent, which is why rejection has a
+ * fallback path (drop the file, keep the turn, tell the user) instead of failing the turn.
+ */
 const ACCEPTED_FILE_EXTENSIONS = new Set([
-  ".txt", ".md", ".csv", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".log",
-  ".pdf", ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".toml", ".ini", ".cfg",
-  ".sql", ".sh", ".ps1", ".bat", ".c", ".cpp", ".h", ".hpp", ".java", ".go", ".rs",
+  // Text, data and configuration
+  ".txt", ".text", ".md", ".markdown", ".rst", ".csv", ".tsv", ".iif", ".json", ".jsonl", ".json5",
+  ".ndjson", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".properties", ".log",
+  ".srt", ".vtt", ".vcf", ".ics", ".ifb", ".eml", ".mht", ".mhtml", ".mime", ".nws", ".brf",
+  ".diff", ".patch", ".sty", ".cls", ".ltx", ".tex", ".pl", ".pm", ".scala", ".ksh", ".es", ".hs",
+  // Rich documents, presentations and spreadsheets
+  ".pdf", ".doc", ".docx", ".dot", ".odt", ".rtf", ".pages",
+  ".xls", ".xlsx", ".xla", ".xlb", ".xlc", ".xlm", ".xlt", ".xlw",
+  ".ppt", ".pptx", ".pot", ".ppa", ".pps", ".pwz", ".wiz", ".keynote",
+  ".svg", ".svgz", ".htm", ".shtml",
+  // Source code
+  ".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".html", ".css", ".sql", ".sh", ".ps1", ".bat",
+  ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".java", ".go", ".rs", ".asm", ".s", ".def",
+  ".dic", ".in", ".list",
+  // Audio (attempt upload; ChatGPT may reject on some plans, then the turn falls back)
+  ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".aiff", ".aif", ".wma", ".amr",
+  // Video (attempt upload; ChatGPT may reject on some plans, then the turn falls back)
+  ".mp4", ".m4v", ".mov", ".avi", ".wmv", ".webm", ".mkv", ".flv", ".mpeg", ".mpg", ".3gp", ".3g2",
 ]);
 
 const FILE_MIME_BY_EXTENSION: Record<string, string> = {
-  ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv", ".json": "application/json",
-  ".jsonl": "application/jsonl", ".xml": "application/xml", ".yaml": "text/yaml", ".yml": "text/yaml",
-  ".log": "text/plain", ".pdf": "application/pdf", ".doc": "application/msword",
+  ".txt": "text/plain", ".text": "text/plain", ".md": "text/markdown", ".markdown": "text/markdown",
+  ".rst": "text/x-rst", ".csv": "text/csv", ".tsv": "text/tab-separated-values", ".iif": "text/x-iif",
+  ".json": "application/json", ".jsonl": "application/x-ndjson", ".json5": "application/json5",
+  ".ndjson": "application/x-ndjson", ".xml": "application/xml", ".yaml": "text/yaml",
+  ".yml": "text/yaml", ".toml": "application/toml", ".ini": "text/x-ini",
+  ".cfg": "text/plain", ".conf": "text/plain", ".properties": "text/x-properties",
+  ".log": "text/plain", ".srt": "text/srt", ".vtt": "text/vtt", ".vcf": "text/vcard",
+  ".ics": "text/calendar", ".ifb": "text/calendar", ".eml": "message/rfc822", ".mht": "text/plain",
+  ".mhtml": "text/plain", ".mime": "text/plain", ".nws": "text/plain", ".brf": "text/plain",
+  ".diff": "text/x-diff", ".patch": "text/x-patch", ".sty": "text/plain", ".cls": "text/plain",
+  ".ltx": "text/plain", ".tex": "text/x-tex", ".pl": "text/plain", ".pm": "text/plain",
+  ".scala": "text/plain", ".ksh": "text/x-shellscript", ".es": "text/plain", ".hs": "text/plain",
+  ".pdf": "application/pdf", ".doc": "application/msword",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".rtf": "application/rtf", ".xls": "application/vnd.ms-excel",
+  ".dot": "application/msword", ".odt": "application/vnd.oasis.opendocument.text",
+  ".rtf": "application/rtf", ".pages": "application/vnd.apple.pages",
+  ".xls": "application/vnd.ms-excel",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xla": "application/vnd.ms-excel", ".xlb": "application/vnd.ms-excel",
+  ".xlc": "application/vnd.ms-excel", ".xlm": "application/vnd.ms-excel",
+  ".xlt": "application/vnd.ms-excel", ".xlw": "application/vnd.ms-excel",
   ".ppt": "application/vnd.ms-powerpoint",
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".pot": "application/vnd.ms-powerpoint", ".ppa": "application/vnd.ms-powerpoint",
+  ".pps": "application/vnd.ms-powerpoint", ".pwz": "application/vnd.ms-powerpoint",
+  ".wiz": "application/vnd.ms-powerpoint", ".keynote": "application/vnd.apple.keynote",
+  ".svg": "image/svg+xml", ".svgz": "image/svg+xml", ".htm": "text/html", ".shtml": "text/html",
+  ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript",
+  ".jsx": "text/jsx", ".ts": "text/x-typescript", ".tsx": "text/tsx",
+  ".py": "text/x-python", ".sql": "application/x-sql", ".sh": "text/x-shellscript",
+  ".ps1": "application/x-powershell", ".bat": "text/plain", ".c": "text/x-c",
+  ".cc": "text/x-c++", ".cpp": "text/x-c++", ".cxx": "text/x-c++", ".h": "text/x-c",
+  ".hh": "text/x-c++", ".hpp": "text/x-c++", ".java": "text/x-java", ".go": "text/x-go",
+  ".rs": "application/x-rust", ".asm": "text/x-asm", ".s": "text/x-asm", ".def": "text/plain",
+  ".dic": "text/plain", ".in": "text/plain", ".list": "text/plain",
+  ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac",
+  ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/opus", ".flac": "audio/flac",
+  ".aiff": "audio/aiff", ".aif": "audio/aiff", ".wma": "audio/x-ms-wma", ".amr": "audio/amr",
+  ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+  ".wmv": "video/x-ms-wmv", ".webm": "video/webm", ".mkv": "video/x-matroska",
+  ".flv": "video/x-flv", ".mpeg": "video/mpeg", ".mpg": "video/mpeg", ".3gp": "video/3gpp",
+  ".3g2": "video/3gpp2",
 };
 
 function safeAttachmentName(value: string | undefined, fallback: string): string {
@@ -293,9 +349,86 @@ function fileUpload(part: CodexFileContent): { name: string; mimeType: string; d
   return { name, mimeType: dataMime || FILE_MIME_BY_EXTENSION[extension] || "text/plain", data: part.fileData };
 }
 
+/**
+ * Codex desktop has no document variant in its UserInput protocol (only Text/Image/Audio), so an
+ * attached file reaches the bridge as plain text: the absolute local path on its own line. ChatGPT
+ * cannot read a local path, which previously degraded the attachment to "the workspace does not
+ * have it". Resolve those standalone paths into real uploads here. The path text itself stays
+ * visible in the context so the model can still reach the file with local tools when needed.
+ * Non-existent paths (URLs, examples, hypothetical paths) are left untouched.
+ */
+const MAX_LOCAL_ATTACHMENT_BYTES = 20_000_000;
+
+export interface LocalFileAttachment {
+  /** Absolute path exactly as referenced in the message text. */
+  path: string;
+  name: string;
+  mimeType: string;
+  /** Raw file bytes encoded as base64 (no data: prefix). */
+  data: string;
+  retentionId: string;
+}
+
+function localPathLine(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.length < 4 || trimmed.length > 500) return undefined;
+  if (!isAbsolute(trimmed) || /[\r\n]/.test(trimmed)) return undefined;
+  // Quoted or annotated fragments ("see C:\notes.md for details") are prose, not attachments.
+  if (/["<>|?*]/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+function localFileAttachment(
+  candidate: string,
+  cache?: Map<string, LocalFileAttachment | { name: string; error: string } | undefined>,
+): LocalFileAttachment | { name: string; error: string } | undefined {
+  const cached = cache?.get(candidate);
+  if (cached !== undefined) return cached;
+  const resolved = resolveLocalFileAttachment(candidate);
+  // `undefined` (ordinary text) is cached too: one statSync per unique path per plan, not per line.
+  cache?.set(candidate, resolved);
+  return resolved;
+}
+
+function resolveLocalFileAttachment(candidate: string): LocalFileAttachment | { name: string; error: string } | undefined {
+  let stats: ReturnType<typeof statSync>;
+  try {
+    stats = statSync(candidate);
+  } catch {
+    return undefined; // not an existing local path: leave the text untouched
+  }
+  const name = safeAttachmentName(basename(candidate), "codex-attachment.bin");
+  const extension = fileExtension(name);
+  if (!stats.isFile()) return { name, error: "path is a directory, not a file" };
+  if (!ACCEPTED_FILE_EXTENSIONS.has(extension)) return { name, error: "uses an unsupported file format" };
+  if (stats.size === 0) return { name, error: "file is empty" };
+  if (stats.size > MAX_LOCAL_ATTACHMENT_BYTES) {
+    return { name, error: `${Math.round(stats.size / 1_000_000)}MB exceeds the ${Math.round(MAX_LOCAL_ATTACHMENT_BYTES / 1_000_000)}MB single-attachment limit` };
+  }
+  let data: string;
+  try {
+    data = readFileSync(candidate).toString("base64");
+  } catch (error) {
+    return { name, error: `could not be read: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  return {
+    path: candidate,
+    name,
+    mimeType: FILE_MIME_BY_EXTENSION[extension] ?? "application/octet-stream",
+    data,
+    retentionId: `att_${createHash("sha256").update(`local-file\0${candidate.toLowerCase()}`).digest("hex").slice(0, 16)}`,
+  };
+}
+
+function localPathKey(messageIndex: number, path: string): string {
+  return `${messageIndex}:local:${createHash("sha1").update(path.toLowerCase()).digest("hex").slice(0, 12)}`;
+}
+
 interface AttachmentPlan {
   selected: Set<string>;
   notices: string[];
+  /** Key from localPathKey → resolved local file or its rejection reason. */
+  localFiles: Map<string, LocalFileAttachment | { name: string; error: string }>;
 }
 
 const ATTACHMENT_RETENTION_MARKER = /<!--\s*codex\\?_attachment\\?_retention\s*:\s*([^\r\n]*?)\s*-->/gi;
@@ -361,6 +494,11 @@ function attachmentPlan(
   const current: Array<{ key: string; retentionId: string }> = [];
   const history: Array<{ key: string; retentionId: string; score: number }> = [];
   const notices: string[] = [];
+  const localFiles = new Map<string, LocalFileAttachment | { name: string; error: string }>();
+  const resolutionCache = new Map<string, LocalFileAttachment | { name: string; error: string } | undefined>();
+  // path retentionId → newest candidate. Later (newer) messages overwrite older ones so a
+  // re-mentioned file uploads once, from the message that currently references it.
+  const localCandidates = new Map<string, { key: string; messageIndex: number; score: number }>();
   let hasLongText = false;
   messages.forEach((message, messageIndex) => {
     if (message.role === "assistant") return;
@@ -373,6 +511,27 @@ function attachmentPlan(
     content.forEach((part, partIndex) => {
       if (part.type === "text") {
         if (part.text.length >= CHATGPT_LONG_TEXT_ATTACHMENT_CHARS && message.role !== "developer") hasLongText = true;
+        if (message.role === "user") {
+          // Scaffolding envelopes (environment context, abort markers) are user-role Codex
+          // plumbing, never human attachment references. Do not mine them for paths.
+          const scaffolding = /^(<environment_context>|<turn_aborted>|<recommended_plugins>)/.test(part.text.trimStart());
+          if (!scaffolding) {
+            part.text.split(/\r?\n/).forEach(line => {
+              const candidate = localPathLine(line);
+              if (!candidate) return;
+              const key = localPathKey(messageIndex, candidate);
+              if (localFiles.has(key)) return; // same path twice in one message: one upload
+              const resolved = localFileAttachment(candidate, resolutionCache);
+              if (!resolved) return; // ordinary text: URL, example path, or stale reference
+              if ("error" in resolved) {
+                notices.push(`Skipped local attachment ${resolved.name}: ${resolved.error}.`);
+                return;
+              }
+              localFiles.set(key, resolved);
+              localCandidates.set(resolved.retentionId, { key, messageIndex, score: overlap * 1000 + messageIndex });
+            });
+          }
+        }
         return;
       }
       if (part.type === "image" && isOnePixelPngDataUrl(part.imageUrl)) return;
@@ -388,6 +547,16 @@ function attachmentPlan(
       else history.push({ ...candidate, score: overlap * 1000 + messageIndex });
     });
   });
+  // Text-referenced local files join the same quota pipeline as structured attachments.
+  for (const entry of localCandidates.values()) {
+    const resolved = localFiles.get(entry.key);
+    const retentionId = resolved && !("error" in resolved) ? resolved.retentionId : entry.key;
+    if (entry.messageIndex >= latestUser) {
+      current.push({ key: entry.key, retentionId });
+    } else {
+      history.push({ key: entry.key, retentionId, score: entry.score });
+    }
+  }
   const reserve = Math.max(generatedAttachmentReserve, hasLongText ? 1 : 0);
   // A compaction turn is the one deliberate exception to normal Plus quota
   // conservation: it summarizes the complete retained context, so preserve
@@ -403,7 +572,7 @@ function attachmentPlan(
     if (retained.length < current.length + history.length) {
       notices.push(`Skipped ${current.length + history.length - retained.length} older attachment(s) above the conservative ${CHATGPT_MAX_INPUT_IMAGES}-attachment hard limit.`);
     }
-    return { selected: new Set(retained.map(candidate => candidate.key)), notices };
+    return { selected: new Set(retained.map(candidate => candidate.key)), notices, localFiles };
   }
   const currentAccepted = current.slice(-Math.max(0, CHATGPT_MAX_INPUT_IMAGES - reserve));
   if (currentAccepted.length < current.length) {
@@ -432,7 +601,7 @@ function attachmentPlan(
       ? `Conserved Plus upload quota by omitting ${history.length - selectedHistory.length} older attachment(s); ${selectedHistory.length} text-relevant historical attachment(s) were uploaded.`
       : `Followed the previous model retention decision: omitted ${history.length - selectedHistory.length} older attachment(s) and uploaded ${selectedHistory.length} retained historical attachment(s).`);
   }
-  return { selected: new Set([...currentAccepted, ...selectedHistory].map(candidate => candidate.key)), notices };
+  return { selected: new Set([...currentAccepted, ...selectedHistory].map(candidate => candidate.key)), notices, localFiles };
 }
 
 /**
@@ -468,7 +637,37 @@ interface PromptAttachmentState {
   files: ChatGptWebPromptFile[];
   longTexts: Array<{ section: number; text: string }>;
   messageIndex: number;
+  messageRole: string;
   allowLongTextAttachment: boolean;
+  allowLocalFileAttachments: boolean;
+}
+
+function userTextLocalAttachmentRecords(
+  text: string,
+  state: PromptAttachmentState,
+): Array<Record<string, unknown>> {
+  if (!state.allowLocalFileAttachments || state.messageRole !== "user") return [];
+  const records: Array<Record<string, unknown>> = [];
+  for (const line of text.split(/\r?\n/)) {
+    const candidate = localPathLine(line);
+    if (!candidate) continue;
+    const key = localPathKey(state.messageIndex, candidate);
+    if (!state.plan.selected.has(key)) continue;
+    const resolved = state.plan.localFiles.get(key);
+    if (!resolved || "error" in resolved) continue;
+    const ref = `codex-input-file-${state.files.length + 1}`;
+    state.files.push({ ref, name: resolved.name, mimeType: resolved.mimeType, data: resolved.data });
+    records.push({
+      type: "file_attachment",
+      attachment_ref: ref,
+      retention_id: resolved.retentionId,
+      filename: resolved.name,
+      // The local path stays in the visible text; repeating it here tells the model the
+      // attachment is the file at that path, not a ChatGPT-side cloud artifact.
+      source_path: resolved.path,
+    });
+  }
+  return records;
 }
 
 function inputContent(
@@ -481,17 +680,29 @@ function inputContent(
     state.longTexts.push({ section, text });
     return { type: "text_attachment", attachment_ref: LONG_TEXT_REF, section, characters: text.length };
   };
-  if (typeof content === "string") return externalizeText(content);
+  const withLocalAttachments = (text: string, externalized: unknown): unknown => {
+    const records = userTextLocalAttachmentRecords(text, state);
+    if (records.length === 0) return externalized;
+    const textPart = typeof externalized === "string" ? { type: "text", text: externalized } : externalized;
+    return [textPart, ...records];
+  };
+  if (typeof content === "string") return withLocalAttachments(content, externalizeText(content));
   const semantic = content.filter(part => part.type !== "image" || !isOnePixelPngDataUrl(part.imageUrl));
   if (semantic.every(part => part.type === "text")) {
     const text = semantic.map(part => part.type === "text" ? part.text : "").join("\n");
-    return externalizeText(text);
+    return withLocalAttachments(text, externalizeText(text));
   }
   return content.flatMap((part, partIndex) => {
     if (part.type === "image" && isOnePixelPngDataUrl(part.imageUrl)) return [];
     if (part.type === "text") {
-      const text = externalizeText(part.text);
-      return typeof text === "string" ? { type: "text", text } : text;
+      const externalized = externalizeText(part.text);
+      const records = state.messageRole === "user" && typeof externalized === "string"
+        ? userTextLocalAttachmentRecords(part.text, state)
+        : [];
+      if (records.length === 0) {
+        return typeof externalized === "string" ? { type: "text", text: externalized } : externalized;
+      }
+      return [{ type: "text", text: externalized }, ...records];
     }
     const key = `${state.messageIndex}:${partIndex}`;
     if (!state.plan.selected.has(key)) {
@@ -853,6 +1064,7 @@ export function compileChatGptWebPrompt(
     "Preserve the task's original instruction priority inside the supplied Codex context: system, then developer, then user. This outer contract only transports that context and its tool access; it must not alter the task's semantic intent.",
     "Interpret every message role literally: assistant messages are your own earlier replies; user messages are the human user's messages; agent_message messages are inter-agent inputs with their encoded author and recipient; system, developer, and tool_result content was not written by the human user.",
     "Codex-supplied environment context blocks, including the XML element named environment_context, are operational context rather than human-authored text. Obey them at their original priority, but do not attribute, quote, summarize, or otherwise mention them unless the latest user request explicitly asks about that context.",
+    "Workspace semantics: the Codex local tools (exec_command, apply_patch, and similar) run on the user's own machine inside the working directory reported by environment_context. Files written or verified there are local files at absolute local paths — never ChatGPT cloud workspace artifacts. When reporting a file you created or inspected with a local tool, give its absolute local path and do not call it a cloud, hosted, or ChatGPT-workspace file.",
     "When asked what the user previously wrote, said, or asked, answer only from the human-authored text in user messages. Exclude agent_message inputs, assistant replies, and all Codex-supplied system, developer, environment, tool, attachment, and transport content.",
     multipartEnabled
       ? "Read and reconstruct every acknowledged staged JSON record before acting."
@@ -1040,10 +1252,12 @@ export function compileChatGptWebPrompt(
     const files: ChatGptWebPromptFile[] = [];
     const longTexts: Array<{ section: number; text: string }> = [];
     const state: PromptAttachmentState = {
-      plan, images, files, longTexts, messageIndex: 0, allowLongTextAttachment: true,
+      plan, images, files, longTexts, messageIndex: 0, messageRole: "user",
+      allowLongTextAttachment: true, allowLocalFileAttachments: true,
     };
     const messages = sourceMessages.map((message, messageIndex) => {
       state.messageIndex = messageIndex;
+      state.messageRole = message.role;
       // Multipart already splits the exact records. A whole-context attachment likewise owns the
       // complete raw envelope, so neither transport needs a second indirection for long sections.
       state.allowLongTextAttachment = !options?.disableGeneratedTextAttachments
@@ -1051,6 +1265,9 @@ export function compileChatGptWebPrompt(
         && !multipartEnabled
         && !contextAttachment
         && message.role !== "developer";
+      // Multipart staging envelopes must stay exact; the planner probe measures raw text only.
+      // Compaction and whole-context transports still carry local files alongside their payload.
+      state.allowLocalFileAttachments = !options?.disableGeneratedTextAttachments && !multipartEnabled;
       return messageEnvelope(message, state);
     });
     if (longTexts.length > 0) {

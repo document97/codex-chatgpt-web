@@ -355,15 +355,22 @@ function validateBatchTools(parsed: CodexParsedRequest, requests: BrokerToolRequ
 export const CHATGPT_WEB_ADAPTER_HEARTBEAT_MS = 10_000;
 export const CHATGPT_WEB_MAX_COMPLETION_RECOVERY_ROUNDS = 3;
 
-function explicitCompletionRecoveryPrompt(
+export function explicitCompletionRecoveryPrompt(
   turnToken: string,
   previousText?: string,
   contextBudgetExhausted = false,
   latestUserRequest?: string,
+  round = 1,
 ): string {
   // Assistant-side prefill is not available on the ChatGPT surface; quoting the model's own
   // closing text into the continuation request reproduces the prefill's pull into mid-task mode.
   const quoted = previousText?.replace(/\s+/g, " ").trim().slice(-280);
+  // On the first recovery round the model may simply have forgotten to call codex_turn_complete.
+  // On subsequent rounds the tool was already attempted but could not complete the turn (e.g.
+  // intercepted by OpenAI safety checks or reported as "not available in this turn"). Force a
+  // text-based handoff instead of burning another round against a blocked tool (R5: explicit
+  // failure path for safety/classification interception that the bridge cannot itself lift).
+  const priorCompletionAttempt = round > 1;
   return [
     quoted
       ? `Your previous response ended with: "${quoted}". Continue from exactly where that left off.`
@@ -376,7 +383,17 @@ function explicitCompletionRecoveryPrompt(
         "If the quoted text or your own plan names work still to do, perform the next action now with the available Codex tools and verify the result; do not restate plans or report status instead of acting.",
         "When all requested work is complete, call codex_turn_complete exactly once with the complete user-facing final answer.",
       ]),
-    "Do not reply with an ordinary progress message. The terminal tool is required. Repeating your previous answer as plain text is not a valid outcome.",
+    ...(!contextBudgetExhausted && priorCompletionAttempt
+      ? [
+        "codex_turn_complete was attempted in a prior round but could not complete the turn."
+          + " It may have been intercepted by OpenAI safety checks or reported as not available."
+          + " Do NOT persistently retry that blocked tool."
+          + " Instead, provide the complete final answer as plain text."
+          + " The bridge will auto-complete the turn from your visible response text.",
+      ]
+      : contextBudgetExhausted
+        ? []
+        : ["Do not reply with an ordinary progress message. The terminal tool is required. Repeating your previous answer as plain text is not a valid outcome."]),
     `Pass turn_token ${turnToken} unchanged to every Codex Native call in this response and do not expose it in the answer.`,
     // R1: a bare nudge is forbidden — every recovery round re-anchors the verbatim latest human
     // request at the end of the visible message, so a retained conversation never drifts back to
@@ -1063,7 +1080,7 @@ export function createChatGptWebAdapter(
       // an abort, or the recovery cap — an unbounded loop let a lost instruction spin forever.
       for (let round = 1; !browserAbort.signal.aborted && !terminalAccepted && round <= CHATGPT_WEB_MAX_COMPLETION_RECOVERY_ROUNDS; round += 1) {
         const budgetExhausted = yieldAtTokens !== undefined && projectedTokens >= yieldAtTokens;
-        const continuationText = explicitCompletionRecoveryPrompt(turnToken, previousRoundText, budgetExhausted, latestUserRequest);
+        const continuationText = explicitCompletionRecoveryPrompt(turnToken, previousRoundText, budgetExhausted, latestUserRequest, round);
         const continuationPrepared = async () => ({
           text: continuationText,
           images: [],
@@ -1141,7 +1158,7 @@ export function createChatGptWebAdapter(
           } catch (reason) {
             console.warn(`[chatgpt-web] browser turn ${traceId} auto-completion refused: ${reason instanceof Error ? reason.message : String(reason)}`);
             throw new ChatGptWebAdapterError(
-              "ChatGPT ended the response without confirming that the requested Codex work was complete. Retry the task; progress text was not accepted as a final answer.",
+              "ChatGPT ended the response without confirming that the requested Codex work was complete. This may be caused by OpenAI safety checks intercepting codex_turn_complete, a tool availability error, or the turn already being committed. Retry the task; progress text was not accepted as a final answer.",
               {
                 status: 502,
                 errorType: "server_error",

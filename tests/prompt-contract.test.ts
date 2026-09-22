@@ -1,4 +1,8 @@
+import { explicitCompletionRecoveryPrompt } from "../src/adapters/chatgpt-web/index";
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET,
   CHATGPT_BIGGER_CONTEXT_PARTS,
@@ -1074,4 +1078,181 @@ test("P3: compaction, Zero Risk, and multipart turns keep their protocol shapes"
   );
   expect(multipart.multipart).toBeDefined();
   expect(multipart.text).not.toContain("<codex_context_transcript>");
+});
+
+// ---------------------------------------------------------------------------
+// Safety-interception fallback (P2 continuation, post-rewrite fix)
+// ---------------------------------------------------------------------------
+
+test("R5: first recovery round still requires codex_turn_complete", () => {
+  const prompt = explicitCompletionRecoveryPrompt(
+    "turn_12345678901234567890123456789012",
+    "Opening the workspace to inspect files.",
+    false,
+    "do the thing",
+    1,
+  );
+  expect(prompt).toContain("call codex_turn_complete exactly once");
+  expect(prompt).toContain("Repeating your previous answer as plain text is not a valid outcome");
+  expect(prompt).toContain("Do not reply with an ordinary progress message");
+  expect(prompt).not.toContain("intercepted by OpenAI safety checks");
+  expect(prompt).not.toContain("auto-complete the turn from your visible response text");
+});
+
+test("R5: subsequent recovery rounds offer text-based handoff after blocked codex_turn_complete", () => {
+  const prompt = explicitCompletionRecoveryPrompt(
+    "turn_12345678901234567890123456789012",
+    "Reading the configuration files now.",
+    false,
+    "do the thing",
+    2,
+  );
+  expect(prompt).toContain("codex_turn_complete was attempted in a prior round but could not complete the turn");
+  expect(prompt).toContain("intercepted by OpenAI safety checks or reported as not available");
+  expect(prompt).toContain("Do NOT persistently retry that blocked tool");
+  expect(prompt).toContain("provide the complete final answer as plain text");
+  expect(prompt).toContain("auto-complete the turn from your visible response text");
+  expect(prompt).not.toContain("Repeating your previous answer as plain text is not a valid outcome");
+  // R1 segment is still present in recovery rounds
+  expect(prompt).toContain("do the thing");
+});
+
+test("R5: round 3 recovery also carries the text-based handoff instruction", () => {
+  const prompt = explicitCompletionRecoveryPrompt(
+    "turn_12345678901234567890123456789012",
+    undefined,
+    false,
+    undefined,
+    3,
+  );
+  expect(prompt).toContain("codex_turn_complete was attempted in a prior round");
+  expect(prompt).toContain("provide the complete final answer as plain text");
+  expect(prompt).not.toContain("Repeating your previous answer as plain text is not a valid outcome");
+});
+
+test("R5: budget-exhausted recovery does not emit the safety fallback", () => {
+  const prompt = explicitCompletionRecoveryPrompt(
+    "turn_12345678901234567890123456789012",
+    "previous text",
+    true,
+    "do the thing",
+    2,
+  );
+  // Budget-exhausted rounds use the handoff instruction instead of the fallback text
+  expect(prompt).not.toContain("intercepted by OpenAI safety checks");
+  expect(prompt).toContain("call codex_turn_complete exactly once");
+});
+
+// ---------------------------------------------------------------------------
+// Local file path attachments (Codex has no document UserInput variant; an
+// attached file arrives as its absolute path on its own text line)
+// ---------------------------------------------------------------------------
+
+test("local file: a standalone existing path line becomes a real attachment", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cgw-local-file-"));
+  const filePath = join(dir, "report.pdf");
+  writeFileSync(filePath, Buffer.from("%PDF-1.7 test-bytes"));
+  try {
+    const parsed = request("high");
+    parsed.context.messages[1]!.content = `analyze this document\n${filePath}`;
+    const compiled = compileChatGptWebPrompt(
+      parsed,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "turn_12345678901234567890123456789012",
+    );
+    expect(compiled.text).toContain("file_attachment");
+    expect(compiled.text).toContain("report.pdf");
+    expect(compiled.text).toContain("source_path");
+    const upload = compiled.files?.find(file => file.name === "report.pdf");
+    expect(upload).toBeDefined();
+    expect(Buffer.from(upload!.data, "base64").toString()).toContain("%PDF-1.7");
+    // The path text stays visible so local tools can still reach the file.
+    expect(compiled.text).toContain(filePath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local file: audio and video extensions are accepted for upload", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cgw-local-av-"));
+  const audioPath = join(dir, "meeting.mp3");
+  const videoPath = join(dir, "clip.mp4");
+  writeFileSync(audioPath, Buffer.from("id3-audio-bytes"));
+  writeFileSync(videoPath, Buffer.from("ftyp-video-bytes"));
+  try {
+    const parsed = request("high");
+    parsed.context.messages[1]!.content = `transcribe these\n${audioPath}\n${videoPath}`;
+    const compiled = compileChatGptWebPrompt(
+      parsed,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "turn_12345678901234567890123456789012",
+    );
+    expect(compiled.files?.map(file => file.name).sort()).toEqual(["clip.mp4", "meeting.mp3"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local file: non-existent paths, prose paths, and directories stay untouched", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cgw-local-miss-"));
+  try {
+    const parsed = request("high");
+    parsed.context.messages[1]!.content = [
+      "see C:\\nonexistent\\ghost.pdf for details", // prose: not standalone
+      "C:\\definitely\\missing\\file.pdf",           // standalone but non-existent
+      `C:\\tmp\\${Date.now()}`,                       // directory, not a file
+      "and an inline sentence mentioning /etc/hosts briefly", // prose
+    ].join("\n");
+    const compiled = compileChatGptWebPrompt(
+      parsed,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "turn_12345678901234567890123456789012",
+    );
+    expect(compiled.files ?? []).toEqual([]);
+    expect(compiled.text).toContain("C:\\definitely\\missing\\file.pdf");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local file: the same path re-mentioned later uploads once from the newest message", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cgw-local-dup-"));
+  const filePath = join(dir, "dup.md");
+  writeFileSync(filePath, Buffer.from("# dedupe check"));
+  try {
+    const parsed = request("high");
+    parsed.context.messages = [
+      { role: "user", content: `first mention\n${filePath}`, timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "noted" }], timestamp: 2 },
+      { role: "user", content: `please re-read it\n${filePath}`, timestamp: 3 },
+    ];
+    const compiled = compileChatGptWebPrompt(
+      parsed,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "turn_12345678901234567890123456789012",
+    );
+    expect(compiled.files?.filter(file => file.name === "dup.md")).toHaveLength(1);
+    expect(compiled.text).toContain("file_attachment");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local file: an unsupported standalone extension surfaces a skip notice", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cgw-local-unsup-"));
+  const filePath = join(dir, "archive.tar.gz");
+  writeFileSync(filePath, Buffer.from("binary"));
+  try {
+    const parsed = request("high");
+    parsed.context.messages[1]!.content = `extract this\n${filePath}`;
+    const compiled = compileChatGptWebPrompt(
+      parsed,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "turn_12345678901234567890123456789012",
+    );
+    expect(compiled.files ?? []).toEqual([]);
+    expect(compiled.attachmentNotices?.some(notice => notice.includes("archive.tar.gz"))).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

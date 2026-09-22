@@ -149,7 +149,10 @@ export class ConversationStateFile {
         .filter(candidate => !candidate.deleted)
         .sort((left, right) => left.updatedAt - right.updatedAt)[0];
       if (!oldest) break;
+      // Capacity eviction must tombstone as well: the append-only file still holds the evicted
+      // entry, and a later load would otherwise resurrect it past the bound.
       this.threadEnvironments.delete(oldest.threadId);
+      this.append({ kind: "thread-environment", threadId: oldest.threadId, updatedAt: Date.now(), deleted: true });
     }
     this.append(record);
   }
@@ -158,6 +161,9 @@ export class ConversationStateFile {
     this.ensureLoaded();
     const existing = this.threadEnvironments.get(threadId);
     if (!existing || existing.deleted) return;
+    // Drop the live record in memory too, so same-process reads honor the tombstone and a later
+    // load() cannot resurrect it from the append-only file.
+    this.threadEnvironments.delete(threadId);
     this.append({ kind: "thread-environment", threadId, updatedAt: Date.now(), deleted: true });
   }
 
@@ -321,7 +327,6 @@ export class ChatGptConversationState {
   record(conversationKey: string, revisionIds: readonly string[]): void {
     if (revisionIds.length === 0) return;
     const existing = this.file.conversation(conversationKey);
-    if (existing?.deleted) this.file.forgetConversation(conversationKey);
     const merged = [...new Set([
       ...(existing?.deleted ? [] : existing?.deliveredRevisionIds ?? []),
       ...revisionIds,

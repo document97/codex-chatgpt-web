@@ -4718,6 +4718,12 @@ export class ChatGptBrowserWorker {
             )
           ));
       await diagnostics.capture(page, reuseConversation ? "effort-selection-retained" : "effort-selection-complete");
+      if (reuseConversation && residualGenerationExpected) {
+        // The launcher kept this conversation after an interrupt; never type (or stage) over a
+        // ChatGPT answer that is still streaming from the aborted turn.
+        await this.waitForResidualGeneration(page, turn.abortSignal);
+        await diagnostics.capture(page, "residual-generation-settled");
+      }
 
       let finalPrompt = prepared.text;
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
@@ -4822,12 +4828,6 @@ export class ChatGptBrowserWorker {
         finalPrompt = multipartFinalPrompt;
       }
 
-      if (reuseConversation && residualGenerationExpected) {
-        // The launcher kept this conversation after an interrupt; never type over a ChatGPT
-        // answer that is still streaming from the aborted turn.
-        await this.waitForResidualGeneration(page, turn.abortSignal);
-        await diagnostics.capture(page, "residual-generation-settled");
-      }
       let submissionBaseline = await this.captureSubmissionBaseline(page);
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };

@@ -274,6 +274,28 @@ test("turn broker revokes only channels owned by the closed browser trace", asyn
   }
 });
 
+test("automatic turns complete only through one matching explicit final answer", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-broker-completion-"));
+  const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
+  try {
+    const token = await broker.register({
+      cwd: root,
+      roots: [root],
+      writableRoots: [root],
+      sandboxPolicy: { type: "dangerFullAccess" },
+      tools: [],
+    }, 60_000, "trace_completion");
+    const completion = broker.waitForCompletion(token);
+    expect(broker.completeTurn(token, "Verified result")).toEqual({ completed: true, duplicate: false });
+    await expect(completion).resolves.toBe("Verified result");
+    expect(broker.completeTurn(token, "Verified result")).toEqual({ completed: true, duplicate: true });
+    expect(() => broker.completeTurn(token, "Different result")).toThrow("conflicts");
+  } finally {
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function unansweredBrokerEndpoint(name: string, onConnection: (socket: Socket) => void) {
   const root = mkdtempSync(join(tmpdir(), name));
   const socketPath = defaultBrokerEndpoint(root);

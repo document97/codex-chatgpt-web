@@ -914,7 +914,7 @@ test("a Codex retry after tab cancellation receives terminal HTTP 400 without a 
   }
 });
 
-test("a restart recovery turn without a new user instruction fails terminally instead of replaying the stopped prompt", async () => {
+test("a restart recovery turn whose older instruction was never delivered reaches the adapter for classification", async () => {
   const config = defaultConfig("browser-only");
   const previousTurnId = "turn_before_codex_restart";
   const recoveryTurnId = "turn_after_codex_restart";
@@ -944,24 +944,18 @@ test("a restart recovery turn without a new user instruction fails terminally in
   };
   let adapterConstructions = 0;
 
-  const response = await responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
+  // The older-turn instruction is a resume or an edited resubmit; only the adapter's retained
+  // instruction ledger can tell those apart, so the request must reach it instead of failing as
+  // revision metadata corruption. The probe factory's throw propagates out of the handler.
+  await expect(responseRequest(new Request("http://127.0.0.1:17841/v1/responses", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   }), config, () => {
     adapterConstructions += 1;
-    throw new Error("a context-only recovery turn must not construct a browser adapter");
-  });
-
-  expect(response.status).toBe(400);
-  expect(await response.json()).toEqual({
-    error: {
-      code: "invalid_request_error",
-      type: "invalid_request_error",
-      message: "ChatGPT web current user message conflicts with native Codex turn_id metadata",
-    },
-  });
-  expect(adapterConstructions).toBe(0);
+    throw new Error("recovery turn reached the browser adapter for ledger classification");
+  })).rejects.toThrow("recovery turn reached the browser adapter for ledger classification");
+  expect(adapterConstructions).toBe(1);
 });
 
 test.each(["alpha/search", "images/generations"])("authenticated lifecycle control aborts active %s before acknowledging cancellation", async path => {
@@ -1304,6 +1298,117 @@ test("authenticated shutdown requires a verified idle drain", async () => {
   } finally {
     await server.stop(true);
   }
+});
+
+test("native fallback keeps cached Codex providers usable after the launcher closes", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const upstreamModels: string[] = [];
+  const server = startServer(config, {
+    restoreNativeRoute: () => ({ changed: true, active: false }),
+    fetchUpstream: async request => {
+      if (new URL(request.url).pathname.endsWith("/models")) {
+        return Response.json({
+          models: [{
+            slug: "gpt-5.6-sol",
+            display_name: "5.6 Sol",
+            visibility: "list",
+            supported_in_api: true,
+            supported_reasoning_levels: [],
+            tool_mode: "code_mode_only",
+          }],
+        });
+      }
+      const body = await request.clone().json() as { model?: string };
+      upstreamModels.push(body.model ?? "");
+      return Response.json({ id: "resp_native", object: "response", status: "completed", output: [] });
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const authorization = { authorization: `Bearer ${config.controlToken}`, "content-type": "application/json" };
+
+  try {
+    const activated = await fetch(`${endpoint}/admin/native-fallback`, {
+      method: "POST",
+      headers: authorization,
+      body: JSON.stringify({ watchedPids: [process.pid] }),
+    });
+    expect(activated.status).toBe(200);
+    expect(await activated.json()).toMatchObject({ status: "ok", native_fallback_only: true });
+
+    const health = await fetch(`${endpoint}/healthz`).then(response => response.json());
+    expect(health.native_fallback_only).toBe(true);
+
+    const catalog = await fetch(`${endpoint}/v1/models`, {
+      headers: { authorization: "Bearer native-session" },
+    }).then(response => response.json()) as { models: Array<{ slug: string }> };
+    expect(catalog.models.map(model => model.slug)).toContain("chatgpt-web/high");
+
+    const native = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: "Bearer native-session", "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", stream: false, input: [] }),
+    });
+    expect(native.status).toBe(200);
+    expect(upstreamModels).toEqual(["gpt-5.6-sol"]);
+
+    const web = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { authorization: "Bearer native-session", "content-type": "application/json" },
+      body: JSON.stringify({ model: "chatgpt-web/high", stream: false, input: [] }),
+    });
+    expect(web.status).toBe(503);
+    expect(upstreamModels).toEqual(["gpt-5.6-sol"]);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("fallback restores disk routing while preserving an in-flight native response and remote compaction", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  let restored = false;
+  const signals: AbortSignal[] = [];
+  const paths: string[] = [];
+  const releases: Array<() => void> = [];
+  const server = startServer(config, {
+    restoreNativeRoute: () => { restored = true; return { changed: true, active: false }; },
+    fetchUpstream: async request => {
+      signals.push(request.signal);
+      paths.push(new URL(request.url).pathname);
+      await new Promise<void>(resolve => releases.push(resolve));
+      return Response.json({ output: [], status: "completed" });
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const requests = ["responses", "responses/compact"].map(path => fetch(`${endpoint}/v1/${path}`, {
+    method: "POST",
+    headers: { authorization: "Bearer fixture-native-session", "content-type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.6-sol", input: [], stream: false }),
+  }));
+  try {
+    const deadline = Date.now() + 2_000;
+    while (releases.length < 2 && Date.now() < deadline) await Bun.sleep(5);
+    expect(releases).toHaveLength(2);
+    const result = await fetch(`${endpoint}/admin/native-fallback`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.controlToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ watchedPids: [process.pid] }),
+    });
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ native_fallback_only: true, native_route_restored: true });
+    expect(restored).toBe(true);
+    expect(signals.every(signal => !signal.aborted)).toBe(true);
+    releases.forEach(release => release());
+    for (const request of requests) {
+      const response = await request;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ status: "completed" });
+    }
+    expect(paths.sort()).toEqual(["/backend-api/codex/responses", "/backend-api/codex/responses/compact"]);
+  } finally {
+    releases.forEach(release => release());
+    await Promise.allSettled(requests);
+  }
+  await server.stop(true);
 });
 
 test("model catalog health distinguishes no request, transport failure, upstream denial, and recovery without secrets", async () => {

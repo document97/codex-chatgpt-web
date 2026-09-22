@@ -613,7 +613,7 @@ export async function runChatGptMcpServer(options: {
     "codex_exec",
     {
       title: "Run a native Codex command",
-      description: afterSafeStart(contract, "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id."),
+      description: afterSafeStart(contract, "Invoke the command tool advertised by the current outer Codex harness. A long-running command returns its native session_id. On Windows, write large scripts using codex_apply_patch, then run the saved file with a short command: long-path support does not increase command-line limits. Specify a known existing workdir."),
       inputSchema: {
         ...turnReferenceInput(contract),
         cmd: z.string().min(1).max(100_000),
@@ -925,33 +925,41 @@ export async function runChatGptMcpServer(options: {
     },
   );
 
-  if (contract === "safe") {
-    server.registerTool(
-      "codex_turn_complete",
-      {
-        title: "Return the result to Codex",
-        description: "Send the complete answer back to the connected Codex request after its work is finished. For compaction, send the requested compacted summary.",
-        inputSchema: {
-          request_id: turnTokenSchema,
-          final_answer: z.string().min(1).max(5_000_000),
-        },
-        outputSchema: {
-          completed: z.literal(true),
-          duplicate: z.boolean(),
-        },
-        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  server.registerTool(
+    "codex_turn_complete",
+    {
+      title: "Return the completed result to Codex",
+      description: "Finish this Codex request only after all requested work and verification are complete. Put the entire user-facing final answer in final_answer. Progress updates and plans must not use this tool.",
+      inputSchema: {
+        ...turnReferenceInput(contract),
+        final_answer: z.string().min(1).max(5_000_000),
       },
-      async ({ request_id, final_answer }, extra) => {
-        console.error(`[chatgpt-web-mcp] codex_turn_complete scope=${requestScopeSummary(extra)}`);
+      outputSchema: {
+        completed: z.literal(true),
+        duplicate: z.boolean(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input, extra) => {
+      console.error(`[chatgpt-web-mcp] codex_turn_complete scope=${requestScopeSummary(extra)}`);
+      try {
         const response = await callTurnBroker<{ completed: true; duplicate: boolean }>(options.brokerSocketPath, {
-          method: "safe_complete",
-          token: request_id,
-          finalAnswer: final_answer,
+          method: contract === "safe" ? "safe_complete" : "native_complete",
+          token: turnReference(contract, input),
+          finalAnswer: input.final_answer,
         }, null, extra.signal);
         return result(response);
-      },
-    );
-  }
+      } catch (error) {
+        // Wrap with actionable context: when the broker rejects the completion the model
+        // should fall back to a text-based answer rather than retrying a blocked tool.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `codex_turn_complete could not finalize the turn: ${message}. `
+          + "If the tool is blocked by safety classification or unavailable in this turn, provide the complete final answer as plain text instead.",
+        );
+      }
+    },
+  );
 
   await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
 }

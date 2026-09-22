@@ -382,7 +382,6 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--automatic-browser-interaction",
-    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
   ]);
@@ -413,7 +412,6 @@ test("launcher migrates the legacy connector identity even when the release vers
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--automatic-browser-interaction",
-    "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
   ]);
@@ -434,7 +432,7 @@ test("launcher update transaction does not preserve a stale disconnected route p
   assert.equal(result.updated, true);
   assert.equal("bridgeEnabled" in result, false);
   assert.equal(fixture.invocation().args.includes("disconnect"), false);
-  assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), true);
+  assert.equal(fixture.invocation().args.includes("--refresh-account-capabilities"), false);
 });
 
 test("launcher update preserves Zero Risk and never probes its account capabilities", async () => {
@@ -1000,7 +998,7 @@ test("failed terminal migration verifies the unchanged previous runtime instead 
   ]);
 });
 
-test("failed launcher update restores every mutable setup file before restarting the previous runtime", async () => {
+test("failed launcher update restores every mutable setup file before restarting the previous runtime", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-setup-checkpoint-"));
   const coreHome = path.join(root, "core");
   const codexHome = path.join(root, "codex");
@@ -1034,7 +1032,16 @@ test("failed launcher update restores every mutable setup file before restarting
   fs.writeFileSync(profilePath, "old profile\n", { mode: 0o600 });
   fs.mkdirSync(sharedDirectory, { mode: 0o750 });
   fs.writeFileSync(sharedConfigPath, "old codex config\n", { mode: 0o640 });
-  fs.symlinkSync(sharedConfigPath, codexConfigPath);
+  try {
+    fs.symlinkSync(sharedConfigPath, codexConfigPath);
+  } catch (error) {
+    if (error?.code === "EPERM" || error?.code === "EACCES") {
+      fs.rmSync(root, { recursive: true, force: true });
+      t.skip("Windows symlink privileges are unavailable in this test environment");
+      return;
+    }
+    throw error;
+  }
   const linkTarget = fs.readlinkSync(codexConfigPath);
   const linkInode = fs.lstatSync(codexConfigPath).ino;
   const directoryMode = fs.statSync(sharedDirectory).mode & 0o777;
@@ -1253,18 +1260,4 @@ test("passkey sign-in is rejected outside macOS even if IPC is invoked directly"
   const fixture = hostFor(null).host;
   fixture.platform = "win32";
   assert.throws(() => fixture.passkeyChromeExecutable(), /supported only on macOS/);
-});
-
-test("skill file experiment uses the setup transaction in production and DEV, and rejects manual mode", async () => {
-  const production = hostFor({ mode: "full", browserInteractionMode: "automatic" });
-  assert.equal((await production.host.setSkillAttachments(true)).enabled, true);
-  assert.equal(production.invocation().args.includes("--skill-attachments"), true);
-  assert.equal(production.invocation().args.includes("--restart-service"), true);
-  const dev = devHostFor({ mode: "full", browserInteractionMode: "automatic" });
-  assert.equal((await dev.host.setSkillAttachments(false)).enabled, false);
-  assert.equal(dev.invocation().args.includes("--inline-skills"), true);
-  assert.equal(dev.invocation().args.includes("--replace-codex-route"), false);
-  const manual = hostFor({ mode: "full", browserInteractionMode: "manual" }, "manual");
-  await assert.rejects(() => manual.host.setSkillAttachments(true), /Zero Risk/);
-  assert.equal(manual.invocation(), undefined);
 });

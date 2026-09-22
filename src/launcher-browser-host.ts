@@ -622,6 +622,12 @@ export async function notifyLauncherTurn(
   reused?: boolean;
   connectorBound?: boolean;
   cancelledByUser?: boolean;
+  /**
+   * Set when the reused retained conversation was kept after its last generation was aborted:
+   * ChatGPT may still be streaming that orphaned answer, so the new instruction waits for the
+   * residual generation to settle before it is typed.
+   */
+  lastGenerationAbortedAt?: number;
 }> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const controller = new AbortController();
@@ -662,10 +668,17 @@ export async function notifyLauncherTurn(
       if (typeof body.connectorBound !== "boolean") {
         throw new Error("Launcher browser control channel returned an invalid connector state");
       }
+      if (body.lastGenerationAbortedAt !== undefined
+        && (typeof body.lastGenerationAbortedAt !== "number" || !Number.isFinite(body.lastGenerationAbortedAt))) {
+        throw new Error("Launcher browser control channel returned an invalid aborted-generation marker");
+      }
       return {
         surfaceId: body.surfaceId,
         reused: body.reused,
         connectorBound: body.connectorBound,
+        ...(typeof body.lastGenerationAbortedAt === "number"
+          ? { lastGenerationAbortedAt: body.lastGenerationAbortedAt }
+          : {}),
       };
     }
     if (activity.phase === "end") {

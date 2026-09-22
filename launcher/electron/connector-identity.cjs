@@ -1,5 +1,6 @@
 const CURRENT_CONNECTOR_NAME = "Codex Native2";
-const DEV_CONNECTOR_NAME = `${CURRENT_CONNECTOR_NAME} DEV`;
+const PREVIOUS_DEV_CONNECTOR_NAME = `${CURRENT_CONNECTOR_NAME} DEV`;
+const DEV_CONNECTOR_NAME = CURRENT_CONNECTOR_NAME;
 const LEGACY_CONNECTOR_NAMES = Object.freeze(["Codex Native"]);
 
 function validateConnectorName(value) {
@@ -21,7 +22,9 @@ function connectorNameForSetup(value) {
 function connectorNameForDevSetup(value) {
   if (value === undefined || value === null) return DEV_CONNECTOR_NAME;
   const configured = validateConnectorName(value);
-  if (configured === CURRENT_CONNECTOR_NAME || isLegacyConnectorName(configured)) {
+  if (configured === CURRENT_CONNECTOR_NAME
+    || configured === PREVIOUS_DEV_CONNECTOR_NAME
+    || isLegacyConnectorName(configured)) {
     return DEV_CONNECTOR_NAME;
   }
   return configured;

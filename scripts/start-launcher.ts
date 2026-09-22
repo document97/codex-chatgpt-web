@@ -4,6 +4,7 @@ import { installedBunExecutable } from "../src/config";
 const root = resolve(import.meta.dir, "..");
 const launcher = resolve(root, "launcher");
 const bunExecutable = installedBunExecutable();
+const productionProfile = process.argv.includes("--production-profile");
 
 function run(args: string[], cwd: string): void {
   const result = Bun.spawnSync([bunExecutable, ...args], {
@@ -22,4 +23,4 @@ function run(args: string[], cwd: string): void {
 
 run(["install", "--frozen-lockfile"], root);
 run(["install", "--frozen-lockfile"], launcher);
-run(["run", "dev"], launcher);
+run(["run", productionProfile ? "dev:production" : "dev"], launcher);

@@ -25,7 +25,7 @@ type InputBlock =
   | { type: "input_text"; text: string }
   | { type: "text"; text: string }
   | { type: "input_image"; image_url?: string; file_id?: string; detail?: string }
-  | { type: "input_file"; file_id?: string; filename?: string };
+  | { type: "input_file"; file_id?: string; filename?: string; file_data?: string };
 
 function inputContentParts(blocks: unknown[] | string | undefined): string | CodexContentPart[] {
   if (typeof blocks === "string") return blocks;
@@ -45,8 +45,13 @@ function inputContentParts(blocks: unknown[] | string | undefined): string | Cod
         parts.push({ type: "text", text: `[image: ${b.file_id ?? "?"}]` }); // file_id ref → no inline data
       }
     } else if (block.type === "input_file") {
-      const ref = (block as { file_id?: string; filename?: string }).file_id ?? (block as { filename?: string }).filename ?? "?";
-      parts.push({ type: "text", text: `[file: ${ref}]` });
+      const file = block as { file_id?: string; filename?: string; file_data?: string };
+      parts.push({
+        type: "file",
+        ...(file.filename ? { filename: file.filename } : {}),
+        ...(file.file_id ? { fileId: file.file_id } : {}),
+        ...(file.file_data ? { fileData: file.file_data } : {}),
+      });
     }
   }
   // Collapse to a plain string only for a single TEXT part; images must stay structured.
@@ -381,12 +386,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
       }
 
       if (effectiveType === "message") {
-        const msg = item as {
-          role?: string;
-          content?: unknown;
-          phase?: "commentary" | "final_answer";
-          internal_chat_message_metadata_passthrough?: { content_item_kinds?: string[] };
-        };
+        const msg = item as { role?: string; content?: unknown; phase?: "commentary" | "final_answer" };
         switch (msg.role) {
           case "system": {
             pendingReasoning.length = 0;
@@ -399,10 +399,7 @@ export function parseRequest(body: unknown): CodexParsedRequest {
           case "developer": {
             pendingReasoning.length = 0;
             const content = inputContentParts(msg.content as unknown[] | string | undefined);
-            const kinds = msg.internal_chat_message_metadata_passthrough?.content_item_kinds;
-            const selectedSkill = msg.role === "user" && kinds?.length === 1
-              && kinds[0] === "skills.selected_skill_instructions";
-            messages.push({ role: msg.role, content, timestamp: now, ...(selectedSkill ? { origin: "codex_skill" as const } : {}) });
+            messages.push({ role: msg.role, content, timestamp: now });
             break;
           }
           case "assistant": {

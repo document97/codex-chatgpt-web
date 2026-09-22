@@ -24,7 +24,6 @@ test("native proxy selection preserves Chromium's first route and rejects protoc
   }
 });
 
-// Three negative network probes may each consume their two-second request deadline.
 test("native fetch reaches a proxy-only target, refreshes routing, and never retries a failed route", async () => {
   for (const key of envKeys) delete process.env[key];
   const root = mkdtempSync(join(tmpdir(), "native-network-"));
@@ -99,4 +98,4 @@ test("native fetch reaches a proxy-only target, refreshes routing, and never ret
     proxy.stop(true);
     rmSync(root, { recursive: true, force: true });
   }
-}, 15_000);
+}, { timeout: 15_000 });

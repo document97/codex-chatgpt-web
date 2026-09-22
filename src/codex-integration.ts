@@ -366,7 +366,10 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
       || existing.version === 7 || existing.version === 8 || existing.version === 9 || existing.version === 10
       ? { ...existing, active: false }
       : { ...existing, version: 4, active: false };
-  writeIntegrationState(disconnected, { path: existing.configPath, data: restored }, [getCodexModelsCachePath()]);
+  // Route lifecycle must not mutate the installed model roster. The cache is refreshed only by
+  // explicit setup/model-management operations, so closing or reopening the launcher cannot
+  // silently remove or re-add model rows.
+  writeIntegrationState(disconnected, { path: existing.configPath, data: restored });
   return { changed: true, active: false };
 }
 
@@ -433,7 +436,7 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     } : {}),
     ...(existing.format ? { format: existing.format } : {}),
   };
-  writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
+  writeIntegrationState(connected, { path: existing.configPath, data: route.text });
   return { changed: true, active: true };
 }
 

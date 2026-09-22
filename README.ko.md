@@ -1,15 +1,11 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="웹 모델로 전환해도, Codex는 그대로. 내 ChatGPT 플랜. 내 작업 흐름. 모델의 가능성을 최대한.">
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">모든 릴리스</a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">모든 릴리스</a>
 </p>
 
 <p align="center">
@@ -21,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">시작하기</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">업데이트</a> · <a href="docs/architecture.md">아키텍처</a> · <a href="TROUBLESHOOTING.md">문제 해결</a>
+  <a href="#get-started">시작하기</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">업데이트</a> · <a href="docs/architecture.md">아키텍처</a> · <a href="TROUBLESHOOTING.md">문제 해결</a>
 </p>
 
 Codex의 네이티브 모델 선택기에서 Pro를 포함해 계정에 제공되는 ChatGPT Web 모델을 사용하세요. ChatGPT Web의 별도 사용 한도를 사용하므로 Work나 Codex의 사용량은 차감되지 않습니다. 기존 인터페이스, 작업, 이미지, 스트리밍은 그대로 유지됩니다.
@@ -41,6 +37,8 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 
 브라우저와 런타임이 앱에 포함되어 있습니다. Chrome, Node, Bun을 따로 설치할 필요가 없습니다.
 
+> **플랫폼 안내:** 자동화된 CI는 Windows(x64), Linux(x64), Apple Silicon(arm64) macOS만 검증하며 릴리스도 이 세 플랫폼만 게시합니다. Intel(x64) macOS는 게시 및 CI 검증 대상이 모두 아니므로 bun run app:package로 소스에서 빌드하세요.
+
 <details>
 <summary><strong>터미널 설치, 업데이트 및 복구</strong></summary>
 
@@ -49,13 +47,13 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/document97/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/document97/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 </details>
@@ -90,7 +88,7 @@ inbound 포트를 열거나 라우터 포트 포워딩을 설정할 필요가 �
 > **Limits**
 >
 > GPT-5.6 Sol Pro 및 GPT-6 Astra의 현재 ChatGPT 메시지 허용량은
-> [Limits](https://github.com/miuuyy/codex-chatgpt-web/discussions/309)를 참고하세요.
+> [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309)를 참고하세요.
 > 컨텍스트 한도는 계정 유형과 선택한 effort에 따라 달라집니다. Plus의 Medium/High는 실측
 > 90,000-token 창을 사용하며, 실험적 3× context를 활성화하면 최대 270,000 tokens까지 확장됩니다.
 > 모든 경우에 네이티브 Codex compaction이 지원됩니다.
@@ -168,7 +166,7 @@ Temporary Chat은 [ChatGPT의 개인정보 보호 모드](https://help.openai.co
 <a id="development"></a>
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/document97/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -189,18 +187,7 @@ bun run app:package
 
 </details>
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
-
 ---
 
-[문제 해결](TROUBLESHOOTING.md) · [보안](SECURITY.md) · [기여](CONTRIBUTING.md) · [MIT 라이선스](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
+[문제 해결](TROUBLESHOOTING.md) · [보안](SECURITY.md) · [기여](CONTRIBUTING.md) · [MIT 라이선스](LICENSE) · [CI](https://github.com/document97/codex-chatgpt-web/actions/workflows/ci.yml)
 
-제가 만든 또 다른 앱: <img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — ChatGPT와 Codex를 위한 로컬, 거의 실시간의 사용자 지정 음성.

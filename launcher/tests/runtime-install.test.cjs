@@ -292,6 +292,26 @@ test("packaged runtime transactionally repairs an incomplete installed bundle", 
   }
 });
 
+test("packaged runtime receipt detects same-size installed content changes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-receipt-"));
+  const resourcesPath = runtimeFixture(root);
+  const coreHome = path.join(root, "core-home");
+  const app = { isPackaged: true, getVersion: () => "0.2.0" };
+  try {
+    const installed = ensurePackagedRuntime({ app, coreHome, resourcesPath });
+    const dependency = path.join(installed, "app", "node_modules", "zod", "v4", "index.js");
+    const original = fs.readFileSync(dependency, "utf8");
+    fs.writeFileSync(dependency, "x".repeat(original.length));
+    const future = new Date(Date.now() + 2_000);
+    fs.utimesSync(dependency, future, future);
+
+    assert.equal(ensurePackagedRuntime({ app, coreHome, resourcesPath }), installed);
+    assert.equal(fs.readFileSync(dependency, "utf8"), original);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failed candidate validation preserves the previous validated runtime", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-preserve-"));
   const resourcesPath = runtimeFixture(root);

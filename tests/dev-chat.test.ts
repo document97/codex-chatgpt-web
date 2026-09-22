@@ -323,7 +323,7 @@ test("DEV chat attaches its broker to the launcher-owned tunnel without a Respon
     });
     expect(transport.config).toBe(config);
     expect(await callTurnBroker(transport.config.brokerSocketPath, { method: "owner_status" }))
-      .toMatchObject({ protocolVersion: 5 });
+      .toMatchObject({ protocolVersion: 6 });
     expect(await (await fetch(`http://127.0.0.1:${occupied.port}`)).text()).toBe("normal Codex route");
   } finally {
     await transport?.close();
@@ -408,6 +408,8 @@ test("DEV driver uses shared browser methods and its own broker while an unrelat
       const result = await invocation;
       const simulated = (result.structuredContent as { simulated: boolean }).simulated;
       const answer = `DEV receipt simulated=${simulated}`;
+      TurnBroker.forSocket(config.brokerSocketPath).completeTurn(token, answer);
+      expect(await remote.waitForCompletion(token)).toBe(answer);
       turn.onTextDelta(answer);
       return answer;
     } finally {

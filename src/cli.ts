@@ -2,8 +2,8 @@
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
 import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
@@ -30,6 +30,7 @@ import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
+import { processAlive, runningCodexProcessIds } from "./process-lifecycle";
 
 const HELP = `codex-chatgpt-web ${VERSION}
 
@@ -48,7 +49,7 @@ Usage:
   codex-chatgpt-web dev setup <--browser-only|--full> [options]
   codex-chatgpt-web dev chat NAME [--model MODEL] [MESSAGE]
   codex-chatgpt-web dev list
-  codex-chatgpt-web serve
+  codex-chatgpt-web serve [--launcher-pid PID|--native-fallback-only|--startup-recovery]
   codex-chatgpt-web mcp [--broker-socket PATH]
   codex-chatgpt-web service <status|install|start|restart|stop|cancel-turns>
   codex-chatgpt-web tunnel <status|start|restart|stop|key-import>
@@ -78,8 +79,6 @@ Setup options:
   --login                      Refresh the stored ChatGPT login even if one exists
   --auto-approve-tool-calls    Opt in to per-call browser clicks on "Allow once" prompts
   --bigger-context             Enable experimental adaptive 1/2/3-message context
-  --skill-attachments         Experimental selected skills as text attachments
-  --inline-skills             Keep selected skills inline (default)
   --standard-context           Disable experimental multi-message context
   --acknowledge-unofficial     Accept the one-time unofficial-browser-automation notice
 
@@ -96,6 +95,16 @@ function takeOption(args: string[], name: string): string | undefined {
   if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
   args.splice(index, 2);
   return value;
+}
+
+function writeStartupLog(filePath: string | undefined, event: string, detail = ""): void {
+  if (!filePath) return;
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    appendFileSync(filePath, `${new Date().toISOString()} ${event}${detail ? ` ${detail}` : ""}\n`, "utf8");
+  } catch {
+    // Startup recovery must still run when its diagnostic side channel is unavailable.
+  }
 }
 
 function takeFlag(args: string[], name: string): boolean {
@@ -299,16 +308,12 @@ async function setupCommand(args: string[]): Promise<void> {
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
   options.forceLogin = takeFlag(args, "--login");
   options.autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
-  const skillAttachments = takeFlag(args, "--skill-attachments");
-  const inlineSkills = takeFlag(args, "--inline-skills");
-  if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
   const biggerContext = takeFlag(args, "--bigger-context");
   const standardContext = takeFlag(args, "--standard-context");
   if (biggerContext && standardContext) {
     throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
   }
   if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
-  if (skillAttachments || inlineSkills) options.experimentalSkillAttachments = skillAttachments;
   const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
   const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
   if (zeroRiskPro && zeroRiskDefault) {
@@ -582,11 +587,86 @@ async function main(): Promise<void> {
       stdout.write("Playwright can launch the configured Chrome executable.\n");
     }
   } else if (command === "serve") {
+    let nativeFallbackOnly = takeFlag(args, "--native-fallback-only");
+    const startupRecovery = takeFlag(args, "--startup-recovery");
+    const launcherPidValue = takeOption(args, "--launcher-pid");
+    const startupLog = takeOption(args, "--startup-log");
     assertNoArgs(args);
-    const config = loadConfig();
-    const server = startServer(config);
-    stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
-    await new Promise<void>(() => {});
+    if (nativeFallbackOnly && startupRecovery) {
+      throw new Error("--native-fallback-only and --startup-recovery are mutually exclusive");
+    }
+    const launcherPid = launcherPidValue === undefined ? undefined : Number(launcherPidValue);
+    if (launcherPid !== undefined && (!Number.isInteger(launcherPid) || launcherPid < 1)) {
+      throw new Error("--launcher-pid must be a positive process id");
+    }
+    if (launcherPid !== undefined && (nativeFallbackOnly || startupRecovery)) {
+      throw new Error("--launcher-pid applies only to the full launcher runtime");
+    }
+    writeStartupLog(startupLog, "start", startupRecovery ? "startup-recovery" : nativeFallbackOnly ? "native-fallback" : "full");
+    try {
+      const config = loadConfig();
+      let nativeFallbackWatchPids: number[] | undefined;
+      if (startupRecovery) {
+        if (config.browserHostDescriptorPath) {
+          try {
+            const launcher = readLauncherBrowserHostDescriptor(config.browserHostDescriptorPath);
+            if (launcher.profile === "production" && processAlive(launcher.pid)) {
+              writeStartupLog(startupLog, "skip", `launcher-is-running pid=${launcher.pid}`);
+              stdout.write("Codex Web GPT is already running; startup route recovery is not required.\n");
+              return;
+            }
+          } catch {
+            // A stale or partially written descriptor is expected after a forced Windows restart.
+          }
+        }
+        const integration = inspectCodexIntegration();
+        if (!integration.installed || !integration.active) {
+          writeStartupLog(startupLog, "skip", "route-is-native");
+          stdout.write("Codex route is already native; startup recovery is not required.\n");
+          return;
+        }
+        nativeFallbackWatchPids = runningCodexProcessIds();
+        if (nativeFallbackWatchPids.length === 0) {
+          const restored = deactivateCodexIntegration();
+          try { if (config.mode === "full") stopTunnel(config); } catch {}
+          writeStartupLog(startupLog, "restored", `changed=${restored.changed}`);
+          stdout.write("Recovered the original Codex route left by the previous Windows session.\n");
+          return;
+        }
+        if (config.mode === "full") {
+          try {
+            stopTunnel(config);
+          } catch (error) {
+            writeStartupLog(startupLog, "tunnel-cleanup-failed", error instanceof Error ? error.message : String(error));
+          }
+        }
+        nativeFallbackOnly = true;
+      } else if (nativeFallbackOnly) {
+        const integration = inspectCodexIntegration();
+        if (!integration.installed || !integration.active) {
+          writeStartupLog(startupLog, "skip", "route-is-native");
+          stdout.write("Codex route is already native; startup fallback is not required.\n");
+          return;
+        }
+        nativeFallbackWatchPids = runningCodexProcessIds();
+        if (nativeFallbackWatchPids.length === 0) {
+          const restored = deactivateCodexIntegration();
+          writeStartupLog(startupLog, "restored", `changed=${restored.changed}`);
+          stdout.write("No Codex process needs fallback; restored the original route.\n");
+          return;
+        }
+      }
+      const server = startServer(config, { nativeFallbackOnly, nativeFallbackWatchPids, launcherPid });
+      writeStartupLog(startupLog, "ready", `http://${config.host}:${server.port}/v1`);
+      stdout.write(
+        `codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode}`
+        + `${nativeFallbackOnly ? ", native fallback" : ""})\n`,
+      );
+      await new Promise<void>(() => {});
+    } catch (error) {
+      writeStartupLog(startupLog, "failed", error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);
   else if (command === "service") await serviceCommand(args);

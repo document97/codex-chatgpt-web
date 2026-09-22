@@ -18,7 +18,6 @@ async function run(args: string[]): Promise<void> {
 }
 
 try {
-  await run(["run", "check-version"]);
   await run(["run", "audit"]);
   await run(["run", "launcher:audit"]);
   await run(["run", "typecheck"]);

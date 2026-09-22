@@ -98,7 +98,9 @@ test("setup preserves session-check failures and never installs without verified
       stateStore: { read: () => state, update() {} },
       browserHost: { probeAuthentication: async () => browser, returnToIdle: async () => {} },
       runtimeHost: { setupCore: run, setupDevCore: run, runtimeConfigSnapshot: () => ({ config: {} }) },
-      smokePassedThisSession: true, send() {}, startCatalogVerificationMonitor() {}, logger: {},
+      smokePassedThisSession: true, send() {}, startCatalogVerificationMonitor() {},
+      setNativeFallbackAutostart() {}, logger: {},
+      runtimeSupervisor: { runtimeCommand: () => ["bun", "serve"] }, CORE_HOME: "/tmp/codex-home",
     });
     await assert.rejects(setup, error => error.message === browser.message);
     assert.equal(installs, 0);
@@ -165,6 +167,23 @@ test("startup failure stays visible on another launch and Retry exits the failed
   assert.deepEqual(Array.from(events.at(-2)[1]), []);
   assert.deepEqual(events.at(-1), ["exit", 1]);
   assert.deepEqual(sandbox.process.env, { CODEX_HOME: "original-codex-home" });
+});
+
+test("normal production shutdown scopes native fallback to running Codex processes", () => {
+  const quitStart = electronMain.indexOf("async function requestQuit()");
+  const quitEnd = electronMain.indexOf("async function start()", quitStart);
+  const quit = electronMain.slice(quitStart, quitEnd);
+  const commitQuit = quit.indexOf("quitting = true");
+  const processScan = quit.indexOf("runningCodexProcessIds()");
+  const fallback = quit.indexOf("runtimeSupervisor?.handoffNativeFallback(codexPids)");
+  const restore = quit.indexOf('runtimeHost?.restoreBridgeRoute("launcher-quit-route-restore")');
+  const shutdown = quit.indexOf("runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true })");
+
+  assert.ok(commitQuit >= 0, "shutdown must commit the launcher exit");
+  assert.ok(processScan > commitQuit, "shutdown must inspect running Codex processes");
+  assert.ok(fallback > processScan, "running Codex processes must receive native passthrough");
+  assert.ok(restore > fallback, "a launcher with no Codex process must restore the native route");
+  assert.ok(shutdown > restore, "the owned runtime must stop after the route is restored");
 });
 
 test("packaged runtime is verified before launcher browser surfaces can bind ports", () => {
@@ -326,16 +345,33 @@ test("MCP verification proves runtime health before checking the connector", () 
 
 test("saved ChatGPT authentication is refreshed before setup is presented", () => {
   assert.match(electronMain, /browserHost\.refreshAuthentication\(\)/);
+  const staleStateRepair = electronMain.indexOf("if (!IS_DEV_PROFILE && !initialRuntime.configured)");
   const productionStartup = electronMain.indexOf("} else void (async () => {");
   const refreshBarrier = electronMain.indexOf("await startupAuthenticationRefresh", productionStartup);
   const upgrade = electronMain.indexOf("runtimeHost.upgradeManagedRuntime()", productionStartup);
   const runtimeStart = electronMain.indexOf("runtimeSupervisor.startIfConfigured()", upgrade);
   const routeConnect = electronMain.indexOf("runtimeHost.connectBridgeRoute()", runtimeStart);
+  assert.ok(staleStateRepair >= 0 && staleStateRepair < refreshBarrier,
+    "missing runtime configuration must clear stale completed setup state before authentication refresh");
+  assert.match(
+    electronMain.slice(staleStateRepair, productionStartup),
+    /coreSetupComplete:\s*false[\s\S]*?codexCatalogVerified:\s*false[\s\S]*?mcpRuntimeInstalled:\s*false[\s\S]*?mcpSetupComplete:\s*false/,
+  );
   assert.ok(refreshBarrier > productionStartup, "production startup must wait for saved-session refresh");
   assert.ok(upgrade > refreshBarrier, "runtime upgrade must not inspect the browser before refresh settles");
   assert.ok(runtimeStart > upgrade, "configured runtime must start after any upgrade");
   assert.ok(routeConnect > runtimeStart, "Codex route must connect only after the runtime is healthy");
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
+});
+
+test("onboarding completes without requiring GitHub or X visits", () => {
+  const start = electronMain.indexOf('handle("launcher:complete-onboarding"');
+  const end = electronMain.indexOf('handle("launcher:open-external"', start);
+  const handler = electronMain.slice(start, end);
+  assert.ok(start >= 0 && end > start, "onboarding completion handler must remain registered");
+  assert.doesNotMatch(handler, /githubOpened|xOpened|Open the GitHub and X pages/);
+  assert.doesNotMatch(appSource, /setStage\("support"\)|stage === "support"/);
+  assert.match(appSource, /aria-label=\{`\$\{stageIndex \+ 1\} \/ 2`\}/);
 });
 
 test("completed model setup remains a repeatable capability probe", () => {

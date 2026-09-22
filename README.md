@@ -1,15 +1,11 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">All releases</a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">All releases</a>
 </p>
 
 <p align="center">
@@ -21,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">Get started</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
+  <a href="#get-started">Get started</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
 Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
@@ -41,21 +37,22 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 
+> **Platform note:** Automated CI verifies Windows (x64), Linux (x64), and macOS on Apple Silicon (arm64), and releases publish those three platforms. macOS on Intel (x64) is neither published nor CI-verified — build from source with bun run app:package.
+
 <details>
-<summary><strong>Terminal install, updates & repair</strong></summary>
 
 Quit the launcher before updating. These installers select the platform and architecture, verify the published checksums, and preserve your ChatGPT profile and launcher settings.
 
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/document97/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/document97/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 </details>
@@ -88,7 +85,7 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 
 > **Limits**
 >
-> See [Limits](https://github.com/miuuyy/codex-chatgpt-web/discussions/309) for the current
+> See [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309) for the current
 > ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
 > the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, or
 > up to 270,000 tokens with experimental **3× context** enabled, with native Codex compaction
@@ -164,7 +161,7 @@ and workspace policies; it does not bypass authentication or access controls.
 <a id="development"></a>
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/document97/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -181,22 +178,18 @@ bun run smoke:subagents
 bun run app:package
 ```
 
-`dev:launcher` uses a separate profile and account under `~/.codex-chatgpt-web-dev`. `dev:chat` exercises the real browser and compaction paths with explicit simulated tool results, without changing your normal Codex route. See the [DEV chat harness](docs/dev-chat.md) for setup and commands.
+`dev:launcher` starts a second launcher profile under `~/.codex-chatgpt-web-dev`: separate Electron
+state, browser cookies/login, ChatGPT account, configuration, sandboxed `CODEX_HOME`, chats,
+diagnostics, broker, and tunnel profile. It can run beside the normal launcher and never starts a
+Responses daemon or changes Codex. Optional Full setup starts and supervises only its isolated MCP
+tunnel, reusing the existing ChatGPT connector name `Codex Native2` without renaming it.
+`dev:chat` exercises the real browser and compaction paths with explicit simulated tool results,
+without changing your normal Codex route. See the [DEV chat harness](docs/dev-chat.md) for setup
+and commands.
 
 </details>
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
-
 ---
 
-[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
+[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/document97/codex-chatgpt-web/actions/workflows/ci.yml)
 
-Also by me: <img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — local, near-real-time custom voices for ChatGPT and Codex.

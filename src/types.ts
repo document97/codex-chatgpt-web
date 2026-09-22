@@ -37,8 +37,6 @@ export type CodexMessage =
 
 export interface CodexUserMessage {
   role: "user";
-  /** Native Responses metadata, never inferred from message text. */
-  origin?: "codex_skill";
   content: string | CodexContentPart[];
   timestamp: number;
 }
@@ -92,8 +90,16 @@ export interface CodexImageContent {
   detail?: string;
 }
 
+export interface CodexFileContent {
+  type: "file";
+  filename?: string;
+  fileId?: string;
+  /** Inline base64 or data URL supplied by the Responses input_file block. */
+  fileData?: string;
+}
+
 /** A user/developer message content part: text or an image (vision). */
-export type CodexContentPart = CodexTextContent | CodexImageContent;
+export type CodexContentPart = CodexTextContent | CodexImageContent | CodexFileContent;
 
 export interface CodexThinkingContent {
   type: "thinking";
@@ -284,6 +290,18 @@ export interface CodexProviderConfig {
     threadEnvironmentStatePath?: string;
     /** Persisted exact-parent rolling checkpoints used only by Free/Luna turns. */
     lunaCheckpointStatePath?: string;
+    /**
+     * Persisted record of which user instructions each retained browser conversation already
+     * carried, used to distinguish a Codex resume from an edited resubmit under a new turn_id.
+     */
+    instructionLedgerStatePath?: string;
+    /** Persisted cumulative inline spend per retained browser conversation (composer boundary). */
+    inlineBudgetStatePath?: string;
+    /**
+     * P4 merged per-conversation state file (conversations.jsonl). Derived from the legacy state
+     * paths when absent; the legacy paths above remain one-time migration sources only.
+     */
+    conversationStatePath?: string;
     /** Optional explicit safety ceiling. Browser turns have no absolute deadline by default. */
     turnTimeoutMs?: number;
     /**
@@ -297,6 +315,8 @@ export interface CodexProviderConfig {
     headed?: boolean;
     /** Attach the turn-bound Codex MCP capability for every connector-capable Web model. */
     localToolsEnabled?: boolean;
+    /** Require tool-capable turns to finish through codex_turn_complete. */
+    explicitCompletion?: boolean;
     /** Account capability proven by the authenticated browser probe. */
     solAvailable?: boolean;
     /** Account capability proven by the authenticated browser probe. */
@@ -306,6 +326,11 @@ export interface CodexProviderConfig {
     autoApproveToolCalls?: boolean;
     /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
     experimentalBiggerContext?: boolean;
-    experimentalSkillAttachments?: boolean;
+    /**
+     * DEV-only experimental transport (rewrite P3): replace the JSON context envelope with a
+     * `### User / ### Assistant` transcript plus a converged static contract. Default off until
+     * A/B validation.
+     */
+    transcriptTransport?: boolean;
   };
 }

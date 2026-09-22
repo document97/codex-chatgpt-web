@@ -14,6 +14,7 @@ import { basename, isAbsolute, join, relative, resolve, toNamespacedPath } from 
 import { isDeepStrictEqual } from "node:util";
 import { expandUserPath } from "../../config";
 import { findTopLevelAssignment } from "../../codex-integration-document";
+import { getCodexHome } from "../../codex-integration-shared";
 import type { CodexTool } from "../../types";
 import type {
   ChatGptRootThreadMetadata,
@@ -603,6 +604,81 @@ function validateMetadataConsistency(
   }
 }
 
+/**
+ * P4/R3: replay a thread's rollout `response_item` payloads as the previous_response_id expansion
+ * fallback when the bridge's short-lived expansion cache misses. Read-only and best-effort: the
+ * rollout jsonl stays the single history authority, so a missing or unreadable rollout simply
+ * declines the fallback.
+ */
+export function replayCodexRolloutResponseItems(options: {
+  codexHome?: string;
+  threadId: string;
+}): unknown[] | undefined {
+  const codexHomeResolved = options.codexHome ?? getCodexHome();
+  if (!CODEX_ID.test(options.threadId)) return undefined;
+  let candidates: string[];
+  try {
+    candidates = scanCanonicalRollouts(codexHomeResolved, options.threadId);
+  } catch {
+    return undefined;
+  }
+  for (const candidate of candidates) {
+    let rolloutPath: string;
+    try {
+      rolloutPath = validateRolloutPath(codexHomeResolved, candidate, options.threadId);
+    } catch {
+      continue;
+    }
+    try {
+      const fd = openSync(rolloutPath, "r");
+      try {
+        const size = fstatSync(fd).size;
+        return rolloutResponseItems(fd, size);
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function rolloutResponseItems(fd: number, size: number): unknown[] {
+  const items: unknown[] = [];
+  let position = 0;
+  let carry = Buffer.alloc(0);
+  const pushLine = (line: Buffer): void => {
+    if (line.length === 0) return;
+    if (line.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
+      throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+    }
+    const item = parseJsonLine(line);
+    if (item.type !== "response_item") return;
+    const payload = record(item.payload);
+    if (payload) items.push(payload);
+  };
+  while (position < size) {
+    const length = Math.min(ROLLOUT_READ_CHUNK_BYTES, size - position);
+    const chunk = Buffer.alloc(length);
+    if (readSync(fd, chunk, 0, length, position) !== length) {
+      throw new Error("Codex rollout changed during history replay");
+    }
+    position += length;
+    const data = Buffer.concat([carry, chunk]);
+    let start = 0;
+    for (let end = data.indexOf(0x0a); end >= 0; end = data.indexOf(0x0a, start)) {
+      pushLine(data.subarray(start, end));
+      start = end + 1;
+    }
+    carry = Buffer.from(data.subarray(start));
+    if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
+      throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+    }
+  }
+  pushLine(carry);
+  return items;
+}
 export function resolveCurrentCodexRolloutEnvironment(options: {
   codexHome: string;
   sqliteHome?: string;

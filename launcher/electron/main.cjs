@@ -20,6 +20,7 @@ const {
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
+const { setNativeFallbackAutostart } = require("./native-fallback-autostart.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -29,6 +30,7 @@ const {
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
+const { repairCodexSessions } = require("./session-checkpoint-repair.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
@@ -97,7 +99,16 @@ let cdpPort = 0;
 let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
+let sessionRefreshTimer = null;
+let sessionCheckpointRepairTimer = null;
 let updateController = null;
+
+function scheduleAutomaticSessionCleanup({ logger, stateStore }, retryDelayMs) {
+  if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer);
+  sessionRefreshTimer = null;
+  // Session cleanup is user initiated. Automatically logging out and clearing the managed
+  // browser profile creates bursts of fresh ChatGPT sessions and can trigger account-risk gates.
+}
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -110,6 +121,53 @@ function findFreePort() {
       server.close((error) => error ? reject(error) : resolve(port));
     });
   });
+}
+
+function runningCodexProcessIds() {
+  if (process.platform !== "win32") return [];
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+  const tasklist = path.join(systemRoot, "System32", "tasklist.exe");
+  const result = spawnSync(tasklist, ["/FI", "IMAGENAME eq Codex.exe", "/FO", "CSV", "/NH"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error("Could not enumerate Codex processes; refusing to stop their possible native passthrough");
+  }
+  return [...new Set(String(result.stdout || "")
+    .split(/\r?\n/)
+    .map(line => /^"Codex\.exe","(\d+)"/i.exec(line)?.[1])
+    .filter(Boolean)
+    .map(Number)
+    .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid))];
+}
+
+function scheduleSessionCheckpointRepair({ logger }) {
+  if (process.platform !== "win32" || IS_DEV_PROFILE || sessionCheckpointRepairTimer) return;
+  let absentChecks = 0;
+  const check = () => {
+    let pids;
+    try { pids = runningCodexProcessIds(); }
+    catch (error) {
+      logger.warn("session.checkpoint_repair_process_scan_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (pids.length > 0) { absentChecks = 0; return; }
+    // Require two consecutive empty scans so a normal Codex restart has finished flushing JSONL.
+    if (++absentChecks < 2) return;
+    const repaired = repairCodexSessions(LAUNCHER_PROFILE.codexHome, logger);
+    if (repaired.length > 0) logger.info("session.checkpoint_repaired", {
+      files: repaired.map(item => ({ file: item.file, changed: item.changed, backup: item.backup })),
+    });
+    clearInterval(sessionCheckpointRepairTimer);
+    sessionCheckpointRepairTimer = null;
+  };
+  sessionCheckpointRepairTimer = setInterval(check, 1_000);
+  sessionCheckpointRepairTimer.unref?.();
+  check();
 }
 
 function send(channel, value) {
@@ -532,9 +590,6 @@ function registerIpc({ logger, stateStore }) {
     return stateStore.update(patch);
   });
   handle("launcher:complete-onboarding", (_event, language, rawInteractionMode) => {
-    const current = stateStore.read();
-    if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
-    if (current.autoStart) setAutostart(app, true);
     const next = stateStore.update({
       language: validateLanguage(language),
       browserInteractionMode: validateBrowserInteractionMode(rawInteractionMode),
@@ -574,6 +629,7 @@ function registerIpc({ logger, stateStore }) {
     if (browser.authenticated) {
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
       send("launcher:state-changed", state);
+      scheduleAutomaticSessionCleanup({ logger, stateStore });
     }
     return browser;
   });
@@ -582,6 +638,7 @@ function registerIpc({ logger, stateStore }) {
     if (browser.authenticated) {
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
       send("launcher:state-changed", state);
+      scheduleAutomaticSessionCleanup({ logger, stateStore });
     }
     return browser;
   });
@@ -590,11 +647,13 @@ function registerIpc({ logger, stateStore }) {
     const browser = await browserHost.logout();
     const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
     send("launcher:state-changed", state);
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
     return { browser, state };
   });
   handle("launcher:session-reminder-dismiss", () => {
     const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
     send("launcher:state-changed", state);
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
     return state;
   });
   handle("launcher:browser-smoke", async () => {
@@ -716,6 +775,9 @@ function registerIpc({ logger, stateStore }) {
     try {
       await runtimeHost.uninstallIntegration();
     } finally {
+      if (!IS_DEV_PROFILE) {
+        setNativeFallbackAutostart(null, CORE_HOME, false);
+      }
       browserHost.writeDescriptor();
     }
     const state = stateStore.update({
@@ -727,7 +789,6 @@ function registerIpc({ logger, stateStore }) {
       codexRestartRequired: true,
       browserInteractionMode: "automatic",
       experimentalBiggerContext: false,
-      experimentalSkillAttachments: false,
       zeroRiskProEnabled: false,
     });
     send("launcher:state-changed", state);
@@ -757,6 +818,7 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    if (!IS_DEV_PROFILE) setNativeFallbackAutostart(null, CORE_HOME, false);
     stateStore.update({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
@@ -801,7 +863,7 @@ function registerIpc({ logger, stateStore }) {
       : await runSetup();
     const state = stateStore.update({
       browserInteractionMode: interactionMode,
-      ...(interactionMode === "manual" ? { experimentalBiggerContext: false, experimentalSkillAttachments: false } : {}),
+      ...(interactionMode === "manual" ? { experimentalBiggerContext: false } : {}),
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE,
@@ -838,15 +900,6 @@ function registerIpc({ logger, stateStore }) {
     });
     send("launcher:state-changed", state);
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
-    return state;
-  });
-  handle("launcher:skill-attachments", async (_event, enabled) => {
-    if (browserHost.activeTraceId || browserHost.currentOperation()) {
-      throw new Error("Finish or cancel active ChatGPT turns before changing Skills as files");
-    }
-    const result = await runtimeHost.setSkillAttachments(enabled === true);
-    const state = stateStore.update({ experimentalSkillAttachments: result.enabled });
-    send("launcher:state-changed", state);
     return state;
   });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
@@ -891,7 +944,7 @@ function registerIpc({ logger, stateStore }) {
     );
     const state = stateStore.update({
       browserInteractionMode: mode,
-      ...(mode === "manual" ? { experimentalBiggerContext: false, experimentalSkillAttachments: false } : {}),
+      ...(mode === "manual" ? { experimentalBiggerContext: false } : {}),
       ...(result.configured ? {
         codexCatalogVerified: IS_DEV_PROFILE,
         codexRestartRequired: !IS_DEV_PROFILE,
@@ -899,6 +952,7 @@ function registerIpc({ logger, stateStore }) {
     });
     send("launcher:state-changed", state);
     send("launcher:browser-state", browserHost.snapshot());
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
     if (!IS_DEV_PROFILE && result.configured) startCatalogVerificationMonitor({ logger, stateStore });
     return { state, credentialsRequired: false, targetMode: mode };
   });
@@ -921,6 +975,7 @@ function registerIpc({ logger, stateStore }) {
     const recordCount = exportSanitizedLogs({
       filePath: logger.filePath,
       destinationPath: result.filePath,
+      textLogPaths: [path.join(CORE_HOME, "logs", "responses-daemon.log")],
     });
     logger.info("launcher.logs_exported", { recordCount });
     return result.filePath;
@@ -958,9 +1013,29 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
-    await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
-    stopCatalogVerificationMonitor();
+    // Make an explicit tray Quit feel immediate while owned runtime cleanup completes.
     quitting = true;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+    if (!IS_DEV_PROFILE) {
+      const codexPids = runningCodexProcessIds();
+      if (codexPids.length > 0) {
+        // Existing Codex processes still hold the local route. Keep a minimal official-model
+        // passthrough until the last one exits. Handoff restores disk routing immediately.
+        await runtimeSupervisor?.handoffNativeFallback(codexPids);
+      } else {
+        await runtimeHost?.restoreBridgeRoute("launcher-quit-route-restore");
+        await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
+      }
+    } else {
+      await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
+    }
+    stopCatalogVerificationMonitor();
+    if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer);
+    sessionRefreshTimer = null;
     await browserHost?.persistSession();
     browserHost?.destroy();
     await browserControl?.close();
@@ -970,6 +1045,7 @@ async function requestQuit() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     quitting = false;
+    createTray(runtimeSupervisor?.logger || { warn() {} }, "en");
     showMainWindow();
     publishOperation({ name: "launcher-quit", status: "failed", message });
     return { ok: false, message };
@@ -987,7 +1063,6 @@ async function start() {
   app.on("second-instance", () => showMainWindow());
   app.on("activate", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
@@ -1003,8 +1078,14 @@ async function start() {
     }
     return installedRuntimeRoot;
   };
+  // Validate/materialize the packaged runtime before allocating any browser-facing port. A
+  // partially copied bundle must never leave an apparently live launcher with unusable surfaces.
+  await waitForPackagedRuntimeSource({
+    app,
+    resourcesPath: process.resourcesPath,
+    coreHome: CORE_HOME,
+  });
   installedRuntimeRoot = runtimeRootProvider();
-
   cdpPort = await findFreePort();
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
@@ -1013,6 +1094,25 @@ async function start() {
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
   await app.whenReady();
+
+  // Paint a real window while the full launcher renderer initializes.
+  let bootWindow = null;
+  if (!process.argv.includes("--hidden")) {
+    bootWindow = new BrowserWindow({
+      width: 460,
+      height: 220,
+      resizable: false,
+      show: true,
+      title: LAUNCHER_PROFILE.displayName,
+      icon: APP_ICON_PATH,
+      backgroundColor: "#181818",
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    bootWindow.setMenuBarVisibility(false);
+    await bootWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(
+      '<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#181818;color:#eee;font:15px system-ui;display:grid;place-items:center;height:100vh}.box{text-align:center}small{display:block;color:#aaa;margin-top:10px}</style><div class="box">Codex Web GPT<small>Preparing the automatic browser bridge…</small></div>',
+    )}`);
+  }
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
@@ -1038,7 +1138,9 @@ async function start() {
     && stateStore.read().onboardingComplete
     && autostart.supported
     && stateStore.read().autoStart !== autostart.enabled) {
-    setAutostart(app, stateStore.read().autoStart);
+    // Read the OS state into the UI; do not create or remove a startup item during
+    // launcher startup. Only the explicit settings switch may change it.
+    stateStore.update({ autoStart: autostart.enabled });
   }
   const logger = createLogger({
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
@@ -1051,6 +1153,10 @@ async function start() {
     stateStore,
     windowStatePath: path.join(app.getPath("userData"), "window-state.json"),
     startHidden,
+  });
+  mainWindow.once("ready-to-show", () => {
+    if (bootWindow && !bootWindow.isDestroyed()) bootWindow.destroy();
+    bootWindow = null;
   });
   browserControl = await new BrowserControlServer({
     logger,
@@ -1083,7 +1189,21 @@ async function start() {
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
-  const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
+  const initialRuntime = runtimeHost.runtimeConfigSnapshot();
+  if (!IS_DEV_PROFILE) setNativeFallbackAutostart(null, CORE_HOME, false);
+  if (!IS_DEV_PROFILE && !initialRuntime.configured) {
+    stateStore.update({
+      coreSetupComplete: false,
+      codexCatalogVerified: false,
+      mcpRuntimeInstalled: false,
+      mcpSetupComplete: false,
+      mcpGuideStep: 0,
+      codexRestartRequired: false,
+      experimentalBiggerContext: false,
+      zeroRiskProEnabled: false,
+    });
+  }
+  const configuredInteractionMode = initialRuntime.config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
@@ -1121,6 +1241,7 @@ async function start() {
   });
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
+  scheduleSessionCheckpointRepair({ logger });
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   let startupAuthenticationRefresh = Promise.resolve();
@@ -1131,6 +1252,9 @@ async function start() {
       });
     });
   }
+  void startupAuthenticationRefresh.then(() => {
+    scheduleAutomaticSessionCleanup({ logger, stateStore });
+  });
   await loadRenderer(mainWindow);
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
@@ -1188,7 +1312,6 @@ async function start() {
       codexRestartRequired: false,
       autoStart: false,
       experimentalBiggerContext: config?.experimentalBiggerContext === true,
-      experimentalSkillAttachments: config?.experimentalSkillAttachments === true,
       zeroRiskProEnabled: config?.zeroRiskProEnabled === true,
     });
     send("launcher:state-changed", state);
@@ -1215,7 +1338,6 @@ async function start() {
         codexCatalogVerified: false,
         codexRestartRequired: true,
         experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
-        experimentalSkillAttachments: runtimeHost.runtimeConfigSnapshot().config?.experimentalSkillAttachments === true,
         zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
         ...(upgrade.mode === "full" ? {
           mcpRuntimeInstalled: true,
@@ -1238,13 +1360,11 @@ async function start() {
     const configuredRuntime = runtimeHost.runtimeConfigSnapshot();
     if (configuredRuntime.configured) {
       const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
-      const experimentalSkillAttachments = configuredRuntime.config?.experimentalSkillAttachments === true;
       const zeroRiskProEnabled = configuredRuntime.config?.zeroRiskProEnabled === true;
       const saved = stateStore.read();
-      if (saved.experimentalSkillAttachments !== experimentalSkillAttachments
-        || saved.experimentalBiggerContext !== enabled
+      if (saved.experimentalBiggerContext !== enabled
         || saved.zeroRiskProEnabled !== zeroRiskProEnabled) {
-        const state = stateStore.update({ experimentalBiggerContext: enabled, experimentalSkillAttachments, zeroRiskProEnabled });
+        const state = stateStore.update({ experimentalBiggerContext: enabled, zeroRiskProEnabled });
         send("launcher:state-changed", state);
       }
     }
@@ -1260,7 +1380,6 @@ async function start() {
         coreSetupComplete: true,
         mcpRuntimeInstalled: config.mode === "full",
         experimentalBiggerContext: config.experimentalBiggerContext === true,
-        experimentalSkillAttachments: config.experimentalSkillAttachments === true,
         zeroRiskProEnabled: config.zeroRiskProEnabled === true,
         ...(runtime.bridgeRouteChanged ? {
           codexCatalogVerified: false,

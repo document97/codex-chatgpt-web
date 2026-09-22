@@ -8,6 +8,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "bun run scripts/dev.cjs",
+    "dev:production": "bun run scripts/dev.cjs --production-profile",
     "audit": "bun audit",
     "typecheck": "tsc --noEmit",
     "build:renderer": "vite build",
@@ -87,10 +88,13 @@
       "guid": "d1a6026a-6210-588e-9a2b-da3936f94e02",
       "oneClick": false,
       "perMachine": false,
-      "allowElevation": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "include": "installer/installer.nsh",
+      "installerLanguages": ["en_US", "zh_CN", "zh_TW", "ja_JP", "ko_KR"]
     }
   }
 }

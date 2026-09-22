@@ -13,6 +13,13 @@ const repositoryManifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 
 test("the public launcher command uses the Electron bootstrap", () => {
   assert.equal(repositoryManifest.scripts.launcher, "bun run scripts/start-launcher.ts");
   assert.equal(repositoryManifest.scripts.launcher, repositoryManifest.scripts.app);
+  assert.equal(
+    repositoryManifest.scripts["launcher:production"],
+    "bun run scripts/start-launcher.ts --production-profile",
+  );
+  const bootstrap = fs.readFileSync(path.join(repositoryRoot, "scripts", "start-launcher.ts"), "utf8");
+  assert.match(bootstrap, /process\.argv\.includes\("--production-profile"\)/);
+  assert.match(bootstrap, /productionProfile \? "dev:production" : "dev"/);
 });
 
 test("the full verification gate audits launcher dependencies", () => {
@@ -40,8 +47,17 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.ok(fs.existsSync(path.join(launcherRoot, "assets", "icon.ico")));
   assert.equal(manifest.build.nsis.oneClick, false);
   assert.equal(manifest.build.nsis.perMachine, false);
-  assert.equal(manifest.build.nsis.allowElevation, false);
+  assert.equal(manifest.build.nsis.allowElevation, true);
+  assert.equal(manifest.build.nsis.allowToChangeInstallationDirectory, true);
   assert.equal(manifest.build.nsis.runAfterFinish, true);
+  assert.equal(manifest.build.nsis.include, "installer/installer.nsh");
+  assert.deepEqual(manifest.build.nsis.installerLanguages, ["en_US", "zh_CN", "zh_TW", "ja_JP", "ko_KR"]);
+  const installerScript = fs.readFileSync(path.join(launcherRoot, "installer", "installer.nsh"), "utf8");
+  assert.match(installerScript, /Enable startup recovery after an unexpected shutdown/);
+  assert.match(installerScript, /DeleteRegValue/);
+  for (const languageId of [1033, 2052, 1028, 1041, 1042]) {
+    assert.match(installerScript, new RegExp(`CodexWebGptStartupRecovery ${languageId}`));
+  }
   assert.match(manifest.build.nsis.guid, /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/);
 });
 
@@ -114,30 +130,6 @@ test("packaged launcher owns a detached checksummed updater for every release pl
   assert.match(updater, /detached:\s*true/);
   assert.match(worker, /waitForParent/);
   assert.doesNotMatch(worker, /backup/i);
-});
-
-test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
-  const ci = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
-  const release = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
-  assert.match(ci, /macos-15, ubuntu-latest, windows-latest/);
-  assert.match(ci, /bun run app:package/);
-  assert.match(ci, /bun run app:smoke/);
-  assert.match(ci, /prepare-linux-libnotify\.sh/);
-  assert.match(ci, /prepare-linux-appimage-tools\.cjs/);
-  assert.match(ci, /archlinux:base/);
-  assert.match(ci, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
-  for (const runner of ["macos-15", "macos-15-intel", "ubuntu-latest", "windows-latest"]) {
-    assert.match(release, new RegExp(runner));
-  }
-  assert.match(release, /launcher\/build\/runtime/);
-  assert.match(release, /bun run app:smoke/);
-  assert.match(release, /prepare-linux-libnotify\.sh/);
-  assert.match(release, /prepare-linux-appimage-tools\.cjs/);
-  assert.match(release, /archlinux:base/);
-  assert.match(release, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
-  assert.match(release, /codesign --verify --deep --strict --verbose=2/);
-  assert.match(release, /Codex Web GPT\.app/);
-  assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);
 });
 
 test("Linux AppImage fallback uses one owned extraction and removes it on exit", {

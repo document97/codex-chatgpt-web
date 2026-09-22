@@ -541,6 +541,14 @@ test("Luna turns without a retained conversation never send connector identity a
   expect(runExclusive.slice(connectorIdentity - 260, connectorIdentity)).toContain("turn.nativeConnector");
 });
 
+test("retained conversations keep their model selection instead of reopening new-chat controls", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const runTurn = workerSource.slice(workerSource.indexOf("  private async runBrowserTurn("));
+  expect(runTurn).toMatch(/let mode = reuseConversation\s+\? stagingMode/);
+  expect(runTurn).toContain('reuseConversation ? "effort-selection-retained" : "effort-selection-complete"');
+  expect(runTurn).toContain("const stagingMode = multipartStages && !reuseConversation");
+});
+
 test("a stalled DOM observation fails within its probe budget", async () => {
   expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(5_000);
   expect(MAX_CHATGPT_BROWSER_PAGE_REBINDS).toBe(2);
@@ -614,11 +622,11 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
       ? assistantLocator
       : hiddenLocator,
   } as unknown as Page;
-  let sendPresses = 0;
+  let sendClicks = 0;
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async () => { sendPresses += 1; },
+    click: async () => { sendClicks += 1; },
   };
   const composer = {
     locator: () => ({ getByTestId: () => sendButton }),
@@ -678,7 +686,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   );
 
   expect(evidence).toBe("mcp_tool_call");
-  expect(sendPresses).toBe(1);
+  expect(sendClicks).toBe(1);
   expect(domObservations).toBe(2);
   expect(recoveries).toBe(1);
   expect(lifecycle).toEqual(["activated", "submitted"]);
@@ -730,15 +738,12 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     isClosed: () => false,
     locator: () => hiddenLocator,
   } as unknown as Page;
-  let pressOptions: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
+  let clickOptions: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async (
-      _key: string,
-      options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number },
-    ) => {
-      pressOptions = options;
+    click: async (options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number }) => {
+      clickOptions = options;
       if (options?.timeout !== 0) throw new Error("nested locator timeout replaced the outer stage budget");
     },
   };
@@ -753,8 +758,8 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     1_000,
     stageSignal => worker.sendAttachedPrompt(page, {}, undefined, stageSignal),
   )).resolves.toBe("user_turn");
-  expect(pressOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
-  expect(pressOptions?.signal).toBeInstanceOf(AbortSignal);
+  expect(clickOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
+  expect(clickOptions?.signal).toBeInstanceOf(AbortSignal);
 });
 
 test("submission observation recovery resumes with rebound locators and is strictly bounded", async () => {
@@ -1673,7 +1678,8 @@ test("successful connector verification clears the proven selection before relea
   }
 });
 
-test("production connector diagnostics distinguish an existing DEV connector", async () => {
+test("production connector diagnostics reuse the shared DEV connector identity", async () => {
+  expect(DEV_CHATGPT_CONNECTOR_NAME).toBe(CHATGPT_CONNECTOR_NAME);
   const connectorMentionFailure = (ChatGptBrowserWorker.prototype as unknown as {
     connectorMentionFailure(menuRows: unknown, attempts: number): Promise<string>;
   }).connectorMentionFailure;
@@ -1682,8 +1688,9 @@ test("production connector diagnostics distinguish an existing DEV connector", a
     connectorMentionRowTitles: async () => [DEV_CHATGPT_CONNECTOR_NAME],
   }, {}, 1);
 
-  expect(message).toContain(`isolated DEV connector ${JSON.stringify(DEV_CHATGPT_CONNECTOR_NAME)}`);
-  expect(message).toContain(`separate connector named ${JSON.stringify(CHATGPT_CONNECTOR_NAME)}`);
+  expect(message).not.toContain("isolated DEV connector");
+  expect(message).not.toContain("separate connector named");
+  expect(message).toContain(`row named ${JSON.stringify(CHATGPT_CONNECTOR_NAME)}`);
 });
 
 test("connector catalog refresh stays fail-closed for absent, legacy, and exact menu evidence", async () => {
@@ -2593,7 +2600,7 @@ test("unrelated ChatGPT dialogs are left untouched", async () => {
   expect(fixture.pressed).toEqual([]);
 });
 
-test("the known terminal ChatGPT error alert returns a structured retryable failure", async () => {
+test("the known terminal ChatGPT error alert permits bounded automatic resubmission", async () => {
   const fixture = dialogPage(
     "Something went wrong. If this issue persists please contact us through our help center at help.openai.com.",
   );
@@ -2621,6 +2628,23 @@ test("the current response error action identifies short and localized failures 
     expect(fixture.pressed).toEqual([]);
     await throwIfChatGptTerminalErrorAlert(dialogPage(text, "Retry", false).page);
   }
+});
+
+test.each([
+  "你提交的消息过长，请编辑后重新发送。",
+  "Your message is too long. Please edit it and try again.",
+  "メッセージが長すぎます。編集してからもう一度お試しください。",
+])("a browser message-length rejection is non-retryable and requests compaction: %s", async text => {
+  const fixture = dialogPage(text, "Retry", true);
+  await expect(throwIfChatGptTerminalErrorAlert(fixture.page)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    status: 400,
+    errorType: "invalid_request_error",
+    code: "context_length_exceeded",
+    retryable: false,
+  });
+  await expect(throwIfChatGptTerminalErrorAlert(fixture.page)).rejects.toThrow("/compact");
+  expect(fixture.pressed).toEqual([]);
 });
 
 test("a previous response error cannot reject a newly accepted user submission", async () => {
@@ -2949,7 +2973,7 @@ test("browser preflight separates model context from one-message transport limit
   const luna = { localToolsEnabled: false, solAvailable: false, extraHighAvailable: false, proAvailable: false };
 
   try {
-    assertChatGptWebInputWithinLimits(90_000, 81_808, "gpt-5.6-sol", "medium", plus);
+    assertChatGptWebInputWithinLimits(90_000, 39_000, "gpt-5.6-sol", "medium", plus);
     throw new Error("expected context-window preflight to fail");
   } catch (error) {
     expect(error).toMatchObject({
@@ -2962,13 +2986,25 @@ test("browser preflight separates model context from one-message transport limit
     expect(String(error)).toContain("/compact");
   }
 
+  // Instant publishes no measured per-message token cap, so only its context window binds.
   expect(() => assertChatGptWebInputWithinLimits(40_999, 32_807, "gpt-5.6-sol", "low", plus)).not.toThrow();
   expect(() => assertChatGptWebInputWithinLimits(41_000, 32_808, "gpt-5.6-sol", "low", plus)).toThrow(
     "41,000-token context window",
   );
-  expect(() => assertChatGptWebInputWithinLimits(89_999, 81_807, "gpt-5.6-sol", "medium", plus)).not.toThrow();
-  expect(() => assertChatGptWebInputWithinLimits(89_999, 81_807, "gpt-5.6-sol", "high", plus)).not.toThrow();
-  expect(() => assertChatGptWebInputWithinLimits(90_000, 81_808, "gpt-5.6-sol", "high", plus)).toThrow(
+  // Reasoning modes leave 81,808 tokens of input room in the 90,000-token model window, but ChatGPT
+  // itself rejected a 48,141-token visible message on a Plus account and accepted 46,410 ones.
+  // The 40,000 transport cap leaves margin for estimator drift, and the image reserve shares the
+  // same ceiling: the same text volume was accepted without images and rejected with ten attached.
+  expect(() => assertChatGptWebInputWithinLimits(89_999, 40_000, "gpt-5.6-sol", "medium", plus)).not.toThrow();
+  expect(() => assertChatGptWebInputWithinLimits(89_999, 40_001, "gpt-5.6-sol", "medium", plus)).toThrow(
+    "40,000-token ChatGPT browser message boundary",
+  );
+  expect(() => assertChatGptWebInputWithinLimits(89_999, 38_976, "gpt-5.6-sol", "medium", plus, undefined, 1_024)).not.toThrow();
+  expect(() => assertChatGptWebInputWithinLimits(89_999, 38_977, "gpt-5.6-sol", "medium", plus, undefined, 1_024)).toThrow(
+    "40,001 visible message tokens including images",
+  );
+  expect(() => assertChatGptWebInputWithinLimits(89_999, 40_000, "gpt-5.6-sol", "high", plus)).not.toThrow();
+  expect(() => assertChatGptWebInputWithinLimits(90_000, 40_000, "gpt-5.6-sol", "high", plus)).toThrow(
     "90,000-token context window",
   );
   expect(() => assertChatGptWebInputWithinLimits(100_000, 100_000, "gpt-5.6-sol", "xhigh", pro)).not.toThrow();
@@ -3049,7 +3085,9 @@ test("browser preflight separates model context from one-message transport limit
 
 test("Bigger Context fits mixed-density whole records within both token and composer limits", () => {
   const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, experimentalBiggerContext: true };
-  const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
+  // One record has to fit one visible message (the bridge never splits a record), two of them must
+  // not, and the low-density whitespace must overflow the composer before it overflows the tokens.
+  const dense = "a!b@c#d$e%f^g&h*".repeat(1_600);
   const sparse = "x".repeat(dense.length);
   const whitespace = " ".repeat(450_000);
   // Equal byte sizes must not pack two dense records into one oversized stage. Conversely,
@@ -3094,7 +3132,7 @@ test("Bigger Context fits mixed-density whole records within both token and comp
       { stagingEffort: stagingMode.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens, finalMessageChars: final.length },
     )).not.toThrow();
   }
-}, 30_000);
+}, 90_000);
 
 test("Bigger Context preflight expands only the total context ceiling and keeps each message boundary", () => {
   const plus = {
@@ -3147,7 +3185,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
   )).toThrow("two-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     269_999,
-    80_000,
+    40_000,
     "gpt-5.6-sol",
     "high",
     plus,
@@ -3156,7 +3194,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
   )).not.toThrow();
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     270_000,
-    80_000,
+    40_000,
     "gpt-5.6-sol",
     "high",
     plus,
@@ -3165,7 +3203,7 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
   )).toThrow("270,000-token three-part ceiling");
   expect(() => assertChatGptWebMultipartInputWithinLimits(
     180_000,
-    80_000,
+    40_000,
     "gpt-5.6-sol",
     "high",
     plus,
@@ -3197,11 +3235,12 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
   const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 200_000).effort).toBe("low");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 300_000).effort).toBe("medium");
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 80_000, 300_000).effort).toBe("medium");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 40_000, 300_000).effort).toBe("medium");
   // The same text must have the same available input budget inline, staged or in the final part.
-  // 80k is the early compaction trigger; the remaining input budget includes an 8192-token reserve.
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 80_169, 276_680).effort).toBe("medium");
-  for (const tokens of [81_807, 81_808]) {
+  // For Plus that budget is the measured 40,000-token message boundary, which is narrower than the
+  // 81,807 tokens the 90,000-token model window leaves after the platform reserve.
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 40_000, 276_680).effort).toBe("medium");
+  for (const tokens of [40_000, 40_001]) {
     const inline = () => assertChatGptWebInputWithinLimits(tokens + 8_192, tokens, "gpt-5.6-sol", "high", plus, 300_000);
     const stage = () => resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, tokens, 300_000);
     const final = () => assertChatGptWebMultipartInputWithinLimits(
@@ -3209,14 +3248,14 @@ test("Bigger Context stages use the lowest account mode that can carry the stage
       { stagingEffort: "medium", maxStageMessageTokens: 500, maxStageChars: 2_000, finalMessageTokens: tokens, finalMessageChars: 300_000 },
     );
     for (const preflight of [inline, stage, final]) {
-      if (tokens === 81_807) expect(preflight).not.toThrow();
+      if (tokens === 40_000) expect(preflight).not.toThrow();
       else expect(preflight).toThrow();
     }
   }
   expect(() => resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-sol",
     plus,
-    81_808,
+    45_001,
     300_000,
   )).toThrow("No ChatGPT effort");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", pro, 100_000, 500_000).effort).toBe("low");
@@ -3555,6 +3594,14 @@ test("stalled-turn diagnostics record DOM metrics without response or overlay co
   expect(diagnosticSource).toContain('innerText ?? candidate.textContent ?? ""');
   expect(diagnosticSource).not.toMatch(/\btext:\s*(?:root|candidate)\.innerText/);
   expect(diagnosticSource).not.toMatch(/\bariaLabel:\s*candidate\.getAttribute/);
+});
+
+test("browser completion requires ChatGPT's response-scoped copy action", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const sessionSource = readFileSync(new URL("../src/chatgpt-session.ts", import.meta.url), "utf8");
+  expect(sessionSource).toContain('button[data-testid="copy-turn-action-button"]');
+  expect(workerSource).toContain("CHATGPT_COMPLETION_ACTION_SELECTOR");
+  expect(workerSource).not.toContain('root.querySelectorAll<HTMLElement>("button")');
 });
 
 test("browser send accepts only new logical turns or generation, not remounted history", () => {

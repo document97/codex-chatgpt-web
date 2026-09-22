@@ -1,4 +1,3 @@
-import { validateSkillFiles } from "./skill-attachments";
 import { createInterface } from "node:readline";
 import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
@@ -10,6 +9,19 @@ import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-sele
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import { ChatGptMirroredTurnProgress } from "./turn-progress";
 import type { ChatGptExternalTurnProgressSnapshot } from "./turn-progress";
+
+// Node ≥15 terminates the process on an unhandled rejection. This helper is the only thing keeping
+// the browser turn alive, and a stage timeout already fails the turn through its own error path,
+// so a late loser of an aborted wait (an AbortError from a raced progress wait, for example) must
+// downgrade to a warning instead of killing the helper mid-task.
+process.on("unhandledRejection", reason => {
+  const message = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+  if (reason instanceof DOMException && reason.name === "AbortError") {
+    console.warn(`[chatgpt-web-helper] discarded a late abort rejection: ${message}`);
+    return;
+  }
+  console.error(`[chatgpt-web-helper] unhandled rejection survived (turn continues elsewhere): ${message}`);
+});
 
 interface RunMessage {
   type: "run";
@@ -395,14 +407,9 @@ input.on("line", line => {
   }
   if (message.type === "prepared_selected_ack") {
     const prepared = message.prepared;
-    if (!prepared || typeof prepared.text !== "string" || !Array.isArray(prepared.images)) {
+    if (!prepared || typeof prepared.text !== "string" || !Array.isArray(prepared.images)
+      || (prepared.files !== undefined && !Array.isArray(prepared.files))) {
       writeProtocol({ type: "error", id: message.id, message: "Browser helper prompt selection is invalid" });
-      abortControllers.get(message.id)?.abort();
-      return;
-    }
-    try { validateSkillFiles(prepared.skillFiles); }
-    catch (error) {
-      writeProtocol({ type: "error", id: message.id, message: error instanceof Error ? error.message : String(error) });
       abortControllers.get(message.id)?.abort();
       return;
     }
@@ -524,4 +531,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack"] });

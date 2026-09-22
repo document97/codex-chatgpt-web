@@ -20,7 +20,10 @@ export type SubagentProtocol = "compatibility-v1" | "native";
  * contract therefore has a new identity instead of mutating the retired connector in place.
  */
 export const CHATGPT_CONNECTOR_NAME = "Codex Native2";
-export const DEV_CHATGPT_CONNECTOR_NAME = `${CHATGPT_CONNECTOR_NAME} DEV`;
+// ChatGPT does not currently allow an installed connector to be renamed. Keep the
+// repository harness on the public connector identity so an existing connector can
+// be reused instead of forcing the user to create a DEV-suffixed duplicate.
+export const DEV_CHATGPT_CONNECTOR_NAME = CHATGPT_CONNECTOR_NAME;
 export const ZERO_RISK_CHATGPT_CONNECTOR_NAME = "Codex Zero Risk";
 export const LEGACY_CHATGPT_CONNECTOR_NAMES = ["Codex Native"] as const;
 
@@ -85,7 +88,8 @@ export interface AppConfig {
   extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext: boolean;
-  experimentalSkillAttachments: boolean;
+  /** DEV-only transcript transport (rewrite P3); default off until A/B validation. */
+  transcriptTransport: boolean;
   /** Explicitly install the additional Pro-sized model row while Zero Risk is active. */
   zeroRiskProEnabled: boolean;
   /** Optional adapter-silence budget for the Responses watchdog. */
@@ -215,7 +219,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     extraHighAvailable: false,
     proAvailable: false,
     experimentalBiggerContext: false,
-    experimentalSkillAttachments: false,
+    transcriptTransport: false,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
     controlToken: randomBytes(32).toString("base64url"),
@@ -497,6 +501,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
     && typeof parsed.experimentalBiggerContext !== "boolean") {
     throw new Error(`Invalid experimentalBiggerContext in ${path}`);
   }
+  if (parsed.transcriptTransport !== undefined && typeof parsed.transcriptTransport !== "boolean") {
+    throw new Error(`Invalid transcriptTransport in ${path}`);
+  }
   if (parsed.zeroRiskProEnabled !== undefined && typeof parsed.zeroRiskProEnabled !== "boolean") {
     throw new Error(`Invalid zeroRiskProEnabled in ${path}`);
   }
@@ -506,17 +513,14 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   const solAvailable = parsed.solAvailable !== false;
   const proAvailable = parsed.proAvailable === true;
-  if (parsed.experimentalSkillAttachments !== undefined && typeof parsed.experimentalSkillAttachments !== "boolean") {
-    throw new Error(`Invalid experimentalSkillAttachments in ${path}`);
-  }
-  const experimentalSkillAttachments = parsed.experimentalSkillAttachments === true;
-  if (browserInteractionMode === "manual" && experimentalSkillAttachments) {
-    throw new Error(`Zero Risk does not support Skills as files in ${path}`);
-  }
   const experimentalBiggerContext = parsed.experimentalBiggerContext === true;
+  const transcriptTransport = parsed.transcriptTransport === true;
   const zeroRiskProEnabled = parsed.zeroRiskProEnabled === true;
   if (browserInteractionMode === "manual" && experimentalBiggerContext) {
     throw new Error(`Zero Risk does not support Bigger Context in ${path}`);
+  }
+  if (browserInteractionMode === "manual" && transcriptTransport) {
+    throw new Error(`Zero Risk does not support transcript transport in ${path}`);
   }
   if (parsed.extraHighAvailable === true && !solAvailable) {
     throw new Error(`Invalid ChatGPT account capabilities in ${path}: Extra High requires Sol`);
@@ -534,7 +538,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     solAvailable,
     proAvailable,
     experimentalBiggerContext,
-    experimentalSkillAttachments,
+    transcriptTransport,
     zeroRiskProEnabled,
   } as AppConfig;
 }
@@ -584,13 +588,17 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       brokerSocketPath: config.brokerSocketPath,
       threadEnvironmentStatePath: join(getConfigDir(), "runtime", "thread-environments.json"),
       lunaCheckpointStatePath: join(getConfigDir(), "runtime", "luna-checkpoints.json"),
+      instructionLedgerStatePath: join(getConfigDir(), "runtime", "instruction-ledger.json"),
+      inlineBudgetStatePath: join(getConfigDir(), "runtime", "inline-budget.json"),
+      conversationStatePath: join(getConfigDir(), "runtime", "conversations.jsonl"),
       headed: config.headed,
       localToolsEnabled: config.mode === "full",
+      explicitCompletion: config.mode === "full" && config.browserInteractionMode === "automatic",
       solAvailable: manual ? false : config.solAvailable,
       extraHighAvailable: !manual && config.extraHighAvailable === true,
       proAvailable: manual ? false : config.proAvailable,
       experimentalBiggerContext: manual ? false : config.experimentalBiggerContext,
-      experimentalSkillAttachments: manual ? false : config.experimentalSkillAttachments,
+      transcriptTransport: manual ? false : config.transcriptTransport === true,
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
     },

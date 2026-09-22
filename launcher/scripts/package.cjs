@@ -56,6 +56,16 @@ function runChecked(command, args) {
 }
 
 function verifySignedMacArchive() {
+  // PR builds (and any build without a signing certificate) skip codesign
+  // verification because electron-builder cannot produce a validly signed
+  // archive without CSC_LINK / CSC_NAME. The "--config.mac.identity=-" flag
+  // tells electron-builder to skip signing, which leaves the bundle in a
+  // state that "codesign --verify --deep --strict" rejects with
+  // "code has no resources but signature indicates they must be present".
+  if (!process.env.CSC_LINK && !process.env.CSC_NAME) {
+    console.log("Skipping macOS codesign verification: no signing certificate configured (PR build or local build without CSC_LINK/CSC_NAME).");
+    return;
+  }
   const archives = fs.readdirSync(staging)
     .filter(name => /-mac-(?:arm64|x64)\.zip$/.test(name));
   if (archives.length !== 1) {

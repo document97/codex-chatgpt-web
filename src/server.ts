@@ -27,6 +27,7 @@ import { augmentNativeModelCatalog } from "./model-catalog";
 import {
   readCodexModelContextOverride,
   readCodexSubagentProtocol,
+  deactivateCodexIntegration,
   type CodexModelContextOverride,
 } from "./codex-integration";
 import {
@@ -49,8 +50,37 @@ import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
+import { processAlive, runningCodexProcessIds } from "./process-lifecycle";
+import { stopTunnel } from "./tunnel";
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A model switch can carry the complete transcript while retaining the previous provider's
+ * continuation id. That id is meaningful only to the provider that created it. We can safely
+ * ignore it when the request already contains an earlier assistant/tool item; rejecting that
+ * request would make an otherwise valid native -> Web model switch look like missing context.
+ */
+function hasCompleteHistoryForProviderSwitch(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.input)) return false;
+  return value.input.some(item => {
+    if (!isRecord(item)) return false;
+    const type = typeof item.type === "string" ? item.type.toLowerCase() : "";
+    if (type === "message") return item.role === "assistant";
+    return type === "reasoning"
+      || type === "function_call"
+      || type === "function_call_output"
+      || type === "custom_tool_call"
+      || type === "custom_tool_call_output"
+      || type === "local_shell_call"
+      || type === "web_search_call"
+      || type === "agent_message";
+  });
+}
 
 export interface NativeCodexTurnIdentity {
   threadId: string;
@@ -360,6 +390,10 @@ export interface ResponseRequestOptions {
   onAdapterEvent?: (event: AdapterEvent) => void;
   /** Bind the physical HTTP stream to the exact native Codex turn that owns it. */
   onTurnIdentity?: (identity: NativeCodexTurnIdentity) => void;
+  /** Reject Web-backed routes while preserving native Codex passthrough for cached providers. */
+  nativeFallbackOnly?: boolean;
+  /** Injectable native Codex transport used by server integration tests. */
+  fetchUpstream?: NativeFetch;
 }
 
 export function routeChatGptWebRequest(parsed: CodexParsedRequest, config: AppConfig): ChatGptWebModelRoute {
@@ -492,9 +526,18 @@ export async function responseRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
+  if (options.nativeFallbackOnly
+    && typeof requestedModel === "string"
+    && isChatGptWebModelSlug(requestedModel)) {
+    return formatErrorResponse(
+      503,
+      "server_error",
+      "Codex Web GPT is closed; start the app before using a ChatGPT Web model",
+    );
+  }
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
+      return await forwardNativeCodexRequest(nativeRequest, "responses", options.fetchUpstream, raw);
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -502,7 +545,16 @@ export async function responseRequest(
   const requestedPreviousResponseId = raw && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as { previous_response_id?: unknown }).previous_response_id
     : undefined;
-  const expanded = expandPreviousResponseInput(raw);
+  let expanded = expandPreviousResponseInput(raw);
+  if (typeof requestedPreviousResponseId === "string"
+    && expanded === raw
+    && hasCompleteHistoryForProviderSwitch(raw)) {
+    // The full transcript is already present, so the previous id is only a provider-local
+    // continuation hint. Do not carry an official response id into ChatGPT Web (or vice versa).
+    const replayable = { ...(raw as Record<string, unknown>) };
+    delete replayable.previous_response_id;
+    expanded = replayable;
+  }
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
   try {
@@ -675,7 +727,7 @@ export async function compactRequest(
   req: Request,
   config: AppConfig,
   adapterFactory: ChatGptWebAdapterFactory = createChatGptWebAdapter,
-  options: Pick<ResponseRequestOptions, "onTurnIdentity"> = {},
+  options: Pick<ResponseRequestOptions, "onTurnIdentity" | "nativeFallbackOnly" | "fetchUpstream"> = {},
 ): Promise<Response> {
   const nativeRequest = req.clone();
   let raw: Record<string, unknown>;
@@ -717,9 +769,16 @@ export async function compactRequest(
   if (typeof raw.model !== "string" || !raw.model) {
     return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
   }
+  if (options.nativeFallbackOnly && isChatGptWebModelSlug(raw.model)) {
+    return formatErrorResponse(
+      503,
+      "server_error",
+      "Codex Web GPT is closed; start the app before using a ChatGPT Web model",
+    );
+  }
   if (!isChatGptWebModelSlug(raw.model)) {
     try {
-      return await forwardNativeCodexRequest(nativeRequest, "responses/compact", undefined, raw);
+      return await forwardNativeCodexRequest(nativeRequest, "responses/compact", options.fetchUpstream, raw);
     } catch (error) {
       return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
     }
@@ -790,14 +849,27 @@ export async function compactRequest(
 
 export function startServer(
   config: AppConfig,
-  dependencies: { fetchUpstream?: NativeFetch; adapterFactory?: ChatGptWebAdapterFactory } = {},
+  dependencies: {
+    fetchUpstream?: NativeFetch;
+    adapterFactory?: ChatGptWebAdapterFactory;
+    nativeFallbackOnly?: boolean;
+    nativeFallbackWatchPids?: number[];
+    launcherPid?: number;
+    /** Lifecycle seams for isolated tests; production uses journaled route restoration. */
+    restoreNativeRoute?: typeof deactivateCodexIntegration;
+    listCodexProcesses?: typeof runningCodexProcessIds;
+    isProcessAlive?: typeof processAlive;
+  } = {},
 ): ReturnType<typeof Bun.serve> {
   if (config.purpose === "dev-harness") {
     throw new Error("DEV harness configuration cannot start a Responses listener");
   }
   const startedAt = Date.now();
-  const turnBroker = config.mode === "full" ? TurnBroker.forSocket(config.brokerSocketPath) : undefined;
-  if (config.mode === "full") {
+  const initialNativeFallbackOnly = dependencies.nativeFallbackOnly === true;
+  const turnBroker = config.mode === "full" && !initialNativeFallbackOnly
+    ? TurnBroker.forSocket(config.brokerSocketPath)
+    : undefined;
+  if (turnBroker) {
     void turnBroker!.listen().catch(error => {
       console.error(
         `[chatgpt-web] turn broker endpoint is unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -805,6 +877,16 @@ export function startServer(
     });
   }
   let draining = false;
+  let nativeFallbackOnly = initialNativeFallbackOnly;
+  let nativeFallbackMonitor: ReturnType<typeof setInterval> | undefined;
+  let launcherMonitor: ReturnType<typeof setInterval> | undefined;
+  let routeRestoreRetry: ReturnType<typeof setTimeout> | undefined;
+  let nativeFallbackTransition: Promise<void> | undefined;
+  let routeRestoreInFlight = false;
+  let nativeRouteRestored = false;
+  const restoreRoute = dependencies.restoreNativeRoute ?? deactivateCodexIntegration;
+  const listCodexProcesses = dependencies.listCodexProcesses ?? runningCodexProcessIds;
+  const isProcessAlive = dependencies.isProcessAlive ?? processAlive;
   let shutdownPromise: Promise<void> | undefined;
   let successfulModelCatalogRequests = 0;
   let lastSuccessfulModelCatalogRequestAt: string | null = null;
@@ -823,6 +905,111 @@ export function startServer(
     const actual = Buffer.from(header);
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
+  const stopNativeFallbackMonitor = (): void => {
+    if (nativeFallbackMonitor) clearInterval(nativeFallbackMonitor);
+    nativeFallbackMonitor = undefined;
+  };
+  const restoreNativeRoute = (reason: string, stopAfterRestore = false): void => {
+    if (shutdownPromise || routeRestoreInFlight) return;
+    routeRestoreInFlight = true;
+    try {
+      if (!nativeRouteRestored) {
+        const result = restoreRoute();
+        nativeRouteRestored = !result.active;
+        if (!nativeRouteRestored) throw new Error("Codex route is still active after restoration");
+        console.info(`[codex-chatgpt-web] native route restored (${reason}; changed=${result.changed})`);
+      }
+      if (routeRestoreRetry) clearTimeout(routeRestoreRetry);
+      routeRestoreRetry = undefined;
+      if (stopAfterRestore) shutdown();
+    } catch (error) {
+      console.error(
+        `[codex-chatgpt-web] native route restore failed; fallback remains available: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+      if (routeRestoreRetry) clearTimeout(routeRestoreRetry);
+      routeRestoreRetry = setTimeout(() => restoreNativeRoute(reason, stopAfterRestore), 2_000);
+      routeRestoreRetry.unref?.();
+    } finally {
+      routeRestoreInFlight = false;
+    }
+  };
+  const watchCodexLifetime = (initialPids: number[] | undefined, maxLifetimeMs = 24 * 60 * 60_000): void => {
+    stopNativeFallbackMonitor();
+    let watchedPids = [...new Set(initialPids ?? [])];
+    let auditAt = Date.now() + maxLifetimeMs;
+    nativeFallbackMonitor = setInterval(() => {
+      try {
+        if (watchedPids.every(pid => !isProcessAlive(pid))) {
+          const currentPids = listCodexProcesses();
+          if (currentPids.length > 0) {
+            watchedPids = currentPids;
+            auditAt = Date.now() + maxLifetimeMs;
+            return;
+          }
+          stopNativeFallbackMonitor();
+          restoreNativeRoute("last Codex process exited", true);
+          return;
+        }
+        // A long-running Codex session is valid. Re-enumerate at the safety deadline instead of
+        // tearing down a route that an active process may still be using.
+        if (Date.now() >= auditAt) {
+          watchedPids = listCodexProcesses();
+          auditAt = Date.now() + maxLifetimeMs;
+          if (watchedPids.length === 0) {
+            stopNativeFallbackMonitor();
+            restoreNativeRoute("Codex lifetime audit found no process", true);
+          }
+        }
+      } catch (error) {
+        // A failed process query is not evidence of an empty process list. Preserve service.
+        console.error(`[codex-chatgpt-web] Codex lifetime check failed; keeping native fallback: ${
+          error instanceof Error ? error.message : String(error)
+        }`);
+      }
+    }, 1_000);
+    nativeFallbackMonitor.unref?.();
+  };
+  const enterNativeFallback = async (
+    watchedPids: number[] | undefined,
+    maxLifetimeMs: number,
+    stopManagedTunnel: boolean,
+  ): Promise<void> => {
+    if (nativeFallbackTransition) return nativeFallbackTransition;
+    nativeFallbackTransition = (async () => {
+      nativeFallbackOnly = true;
+      // Restore disk configuration immediately; only already-loaded Codex providers need the
+      // remaining listener. A newly launched Codex must not inherit a route owned by a closed app.
+      restoreNativeRoute("launcher closed");
+      watchCodexLifetime(watchedPids, maxLifetimeMs);
+      turnBroker?.setExternalOwnersAccepted(false);
+      const reason = new Error("Codex Web GPT is closed");
+      const compactionCancellation = cancelAllStructuredCompactions(reason);
+      chatGptTurnSessions.clear();
+      turnBroker?.revokeExternalOwners();
+      const cleanup = await Promise.allSettled([
+        compactionCancellation,
+        closeChatGptBrowserWorkers(),
+        closeTurnBrokers(),
+      ]);
+      const failure = cleanup.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) console.error(`[codex-chatgpt-web] Web cleanup failed; native fallback remains available: ${String(failure.reason)}`);
+      if (stopManagedTunnel && config.mode === "full") {
+        try {
+          stopTunnel(config);
+        } catch (error) {
+          // The official-model passthrough is already active. Tunnel cleanup is retried by the
+          // next launcher start and must not take the fallback down with it.
+          console.error(`[codex-chatgpt-web] tunnel cleanup after launcher exit failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`);
+        }
+      }
+    })().finally(() => {
+      nativeFallbackTransition = undefined;
+    });
+    return nativeFallbackTransition;
+  };
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
@@ -839,6 +1026,8 @@ export function startServer(
           port: config.port,
           uptime: (Date.now() - startedAt) / 1_000,
           accepting_turns: !draining,
+          native_fallback_only: nativeFallbackOnly,
+          native_route_restored: nativeRouteRestored,
           successful_model_catalog_requests: successfulModelCatalogRequests,
           last_successful_model_catalog_request_at: lastSuccessfulModelCatalogRequestAt,
           model_catalog_requests: modelCatalogRequests,
@@ -851,6 +1040,41 @@ export function startServer(
         draining = url.pathname === "/admin/drain";
         turnBroker?.setExternalOwnersAccepted(!draining);
         return Response.json({ status: "ok", accepting_turns: !draining, ...activity() });
+      }
+      if (req.method === "POST" && url.pathname === "/admin/native-fallback") {
+        if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+        let watchedPids: number[];
+        let maxLifetimeMs: number | undefined;
+        try {
+          const body = await req.json() as { watchedPids?: unknown; maxLifetimeMs?: unknown };
+          if (!Array.isArray(body.watchedPids)
+            || body.watchedPids.length === 0
+            || body.watchedPids.length > 256
+            || body.watchedPids.some(pid => !Number.isInteger(pid) || Number(pid) < 1)) {
+            throw new Error("watchedPids must contain 1-256 positive process ids");
+          }
+          watchedPids = [...new Set(body.watchedPids.map(Number))];
+          if (watchedPids.length > 0) {
+            maxLifetimeMs = Number(body.maxLifetimeMs ?? 24 * 60 * 60_000);
+            if (!Number.isInteger(maxLifetimeMs) || maxLifetimeMs < 60_000 || maxLifetimeMs > 24 * 60 * 60_000) {
+              throw new Error("maxLifetimeMs must be between one minute and 24 hours");
+            }
+          }
+        } catch (error) {
+          return Response.json(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            { status: 400 },
+          );
+        }
+        try {
+          await enterNativeFallback(watchedPids, maxLifetimeMs ?? 24 * 60 * 60_000, false);
+        } catch (error) {
+          return Response.json(
+            { status: "error", error: error instanceof Error ? error.message : String(error) },
+            { status: 500 },
+          );
+        }
+        return Response.json({ status: "ok", native_fallback_only: true, native_route_restored: nativeRouteRestored, watched_pids: watchedPids });
       }
       if (req.method === "POST" && url.pathname === "/admin/cancel-turn") {
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
@@ -1019,6 +1243,9 @@ export function startServer(
               `Could not resolve the installed subagent protocol: ${error instanceof Error ? error.message : String(error)}`,
             ), modelCatalogFailure("config", error));
           }
+          // The installed model roster is stable across launcher availability. Native fallback
+          // changes request execution only; returning the native-only catalog here would make
+          // Codex delete the manually installed Web rows from models_cache.json on every restart.
           let failure: ModelCatalogFailure | undefined;
           const response = await modelsRequest(
             new Request(req, { signal }),
@@ -1047,7 +1274,7 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            { onTurnIdentity: bindIdentity, nativeFallbackOnly, fetchUpstream: dependencies.fetchUpstream },
           ),
           req.signal,
           process.platform,
@@ -1061,7 +1288,7 @@ export function startServer(
             new Request(req, { signal }),
             config,
             dependencies.adapterFactory,
-            { onTurnIdentity: bindIdentity },
+            { onTurnIdentity: bindIdentity, nativeFallbackOnly, fetchUpstream: dependencies.fetchUpstream },
           ),
           req.signal,
           process.platform,
@@ -1096,6 +1323,11 @@ export function startServer(
   function shutdown(): void {
     if (shutdownPromise) return;
     draining = true;
+    stopNativeFallbackMonitor();
+    if (launcherMonitor) clearInterval(launcherMonitor);
+    launcherMonitor = undefined;
+    if (routeRestoreRetry) clearTimeout(routeRestoreRetry);
+    routeRestoreRetry = undefined;
     chatGptTurnSessions.clear();
     flushResponseState();
     shutdownPromise = (async () => {
@@ -1120,5 +1352,27 @@ export function startServer(
   }
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+  if (initialNativeFallbackOnly) {
+    restoreNativeRoute("startup recovery");
+    watchCodexLifetime(dependencies.nativeFallbackWatchPids, 24 * 60 * 60_000);
+  } else if (Number.isInteger(dependencies.launcherPid) && Number(dependencies.launcherPid) > 0) {
+    const launcherPid = Number(dependencies.launcherPid);
+    launcherMonitor = setInterval(() => {
+      if (nativeFallbackOnly || isProcessAlive(launcherPid)) return;
+      if (launcherMonitor) clearInterval(launcherMonitor);
+      launcherMonitor = undefined;
+      let watchedPids: number[] | undefined;
+      try { watchedPids = listCodexProcesses(); } catch {
+        // Unknown process ownership keeps the listener alive until a later successful scan.
+      }
+      void enterNativeFallback(watchedPids, 24 * 60 * 60_000, true).catch(error => {
+        console.error(`[codex-chatgpt-web] launcher-exit fallback failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`);
+        restoreNativeRoute("launcher exited and fallback initialization failed");
+      });
+    }, 1_000);
+    launcherMonitor.unref?.();
+  }
   return server;
 }

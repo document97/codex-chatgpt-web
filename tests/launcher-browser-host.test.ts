@@ -155,6 +155,35 @@ test("launcher turn control sends authenticated lifecycle events", async () => {
   }
 });
 
+test("launcher turn start surfaces the aborted-generation marker for a reused conversation", async () => {
+  const server = createServer(async (_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"ok":true,"surfaceId":"launcher_surface_id_0123456789AB","reused":true,"connectorBound":true,"lastGenerationAbortedAt":1790040578799}\n');
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server has no port");
+    const path = descriptorFile(`http://127.0.0.1:${address.port}`);
+    await expect(notifyLauncherTurn(path, {
+      phase: "start",
+      traceId: "abc123def456",
+      helperPid: process.pid,
+      conversationKey: "a".repeat(64),
+    })).resolves.toEqual({
+      surfaceId: "launcher_surface_id_0123456789AB",
+      reused: true,
+      connectorBound: true,
+      lastGenerationAbortedAt: 1790040578799,
+    });
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test("launcher retained-conversation release uses its authenticated exact-key endpoint", async () => {
   let received: { url?: string; authorization?: string; body?: unknown } = {};
   const server = createServer(async (request, response) => {

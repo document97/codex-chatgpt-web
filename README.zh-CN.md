@@ -1,19 +1,15 @@
 <p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="切换到网页版模型，继续使用 Codex。你的 ChatGPT 订阅。你的工作流。充分发挥模型能力。">
-</p>
-
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">所有版本</a>
-</p>
-
-<p align="center">
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/latest">全部发布</a>
 </p>
 
 <p align="center">
@@ -21,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">开始使用</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">更新内容</a> · <a href="docs/architecture.md">架构</a> · <a href="TROUBLESHOOTING.md">故障排除</a>
+  <a href="#get-started">开始使用</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">更新内容</a> · <a href="docs/architecture.md">架构</a> · <a href="TROUBLESHOOTING.md">故障排除</a>
 </p>
 
 在 Codex 原生模型选择器中使用账户可用的 ChatGPT 网页版模型，包括 Pro。使用 ChatGPT 网页版的独立额度，不消耗 Work 或 Codex 额度。保留原有的界面、任务、图片和流式输出。
@@ -34,28 +30,29 @@
 
 **可用模型：** Free/Go → **Luna / Think**；具有推理控制选项的账户 → **Instant–High**，并按实际可用状态提供 **Extra High** 和 **Pro**。启动器会自动检测账户可用的模型。
 
-1. **安装启动器**：点击上方对应系统的下载按钮。
+1. **安装启动器**。
 2. **登录 ChatGPT**：在内置浏览器中登录并运行浏览器冒烟测试。
 3. **安装模型**：重启一次 Codex，然后选择 **ChatGPT Web — …** 模型。
 4. **需要使用工具编程时**：打开启动器中的 **MCP**，完成下方的完整 harness 设置。
 
-应用已包含浏览器和运行时，无需另外安装 Chrome、Node 或 Bun。
+应用已包含浏览器和运行时。
+
+> **平台说明：** 自动化 CI 仅验证 Windows（x64）、Linux（x64）和 Apple Silicon（arm64）的 macOS，发布也仅包含这三个平台；Intel（x64）macOS 不发布、也不在 CI 验证范围内——请运行 bun run app:package 从源码构建。
 
 <details>
-<summary><strong>命令行安装、更新与修复</strong></summary>
 
 更新前请退出启动器。以下安装脚本会选择正确的平台和架构、验证发布的校验和，并保留 ChatGPT 配置文件和启动器设置。
 
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/document97/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/document97/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 </details>
@@ -87,7 +84,7 @@ Zero Risk 不读取或操作 ChatGPT 页面。请自行选择模型和 `Codex Ze
 > **限制**
 >
 > 有关 **GPT-5.6 Sol Pro** 和 **GPT-6 Astra** 当前的 ChatGPT 消息额度，请参阅
-> [Limits](https://github.com/miuuyy/codex-chatgpt-web/discussions/309)。Token 上下文上限取决于
+> [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309)。Token 上下文上限取决于
 > 账户类型和所选 effort。Plus 的 Medium/High 使用实测的 90,000-token 窗口；启用实验性的
 > **3× context** 后最高为 270,000 tokens，并且全程支持原生 Codex compaction。
 
@@ -162,7 +159,7 @@ codex-chatgpt-web subagents native
 <a id="development"></a>
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
+git clone https://github.com/document97/codex-chatgpt-web.git && \
 cd codex-chatgpt-web && \
 bun run app
 ```
@@ -183,18 +180,6 @@ bun run app:package
 
 </details>
 
-## Star History
-
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
-
 ---
 
-[故障排除](TROUBLESHOOTING.md) · [安全](SECURITY.md) · [贡献](CONTRIBUTING.md) · [MIT 许可证](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
-
-我的另一个项目：<img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — 为 ChatGPT 和 Codex 提供本地、近实时的自定义声音。
+[故障排除](TROUBLESHOOTING.md) · [安全](SECURITY.md) · [贡献](CONTRIBUTING.md) · [MIT 许可证](LICENSE) · [CI](https://github.com/document97/codex-chatgpt-web/actions/workflows/ci.yml)

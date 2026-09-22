@@ -1,6 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { atomicWriteFile } from "../../config";
 import { getCodexHome } from "../../codex-integration-shared";
 import type { CodexParsedRequest } from "../../types";
 import {
@@ -18,6 +16,7 @@ import {
   type ChatGptSandboxPolicy,
   type ChatGptTurnEnvironment,
 } from "./environment";
+import { conversationStatePath, sharedConversationStateFile, type ConversationStateFile } from "./conversation-state";
 import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
 
 interface StoredThreadEnvironment {
@@ -26,11 +25,6 @@ interface StoredThreadEnvironment {
   writableRoots: string[];
   sandboxPolicy: ChatGptSandboxPolicy;
   updatedAt: number;
-}
-
-interface StoredThreadEnvironmentFile {
-  version: 1;
-  threads: Record<string, StoredThreadEnvironment>;
 }
 
 const MAX_THREAD_ENVIRONMENTS = 256;
@@ -138,13 +132,19 @@ function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironme
 export class ChatGptThreadEnvironmentStore {
   private loaded = false;
   private readonly threads = new Map<string, StoredThreadEnvironment>();
+  /** P4: trusted authority rides the shared conversations.jsonl; this.path is a migration source. */
+  private readonly stateFile: ConversationStateFile | undefined;
 
   constructor(
     private readonly path?: string,
     private readonly now: () => number = Date.now,
     private readonly codexHome: string = getCodexHome(),
     private readonly sqliteHome?: string,
-  ) {}
+  ) {
+    this.stateFile = this.path
+      ? sharedConversationStateFile(conversationStatePath(this.path), { threadEnvironment: this.path })
+      : undefined;
+  }
 
   resolve(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
     const identity = extractChatGptTurnIdentity(parsed);
@@ -249,27 +249,29 @@ export class ChatGptThreadEnvironmentStore {
   private load(): void {
     if (this.loaded) return;
     this.loaded = true;
-    if (!this.path || !existsSync(this.path)) return;
-    const parsed = JSON.parse(readFileSync(this.path, "utf8")) as Partial<StoredThreadEnvironmentFile>;
-    const rawThreads = record(parsed.threads);
-    if (parsed.version !== 1 || !rawThreads) {
-      throw new Error(`Invalid ChatGPT thread environment store: ${this.path}`);
+    if (!this.stateFile) return;
+    for (const threadId of this.stateFile.threadEnvironmentIds()) {
+      const record = this.stateFile.threadEnvironment(threadId);
+      if (!record || record.deleted) continue;
+      try {
+        const environment = validateStoredEnvironment(record.environment);
+        if (this.now() - environment.updatedAt > THREAD_ENVIRONMENT_TTL_MS) continue;
+        this.threads.set(threadId, environment);
+      } catch {
+        // A corrupt entry costs its cache line, never the daemon or another thread's authority.
+      }
     }
-    const cutoff = this.now() - THREAD_ENVIRONMENT_TTL_MS;
-    const entries = Object.entries(rawThreads)
-      .map(([threadId, value]) => [threadId, validateStoredEnvironment(value)] as const)
-      .filter(([, environment]) => environment.updatedAt >= cutoff)
-      .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
-      .slice(-MAX_THREAD_ENVIRONMENTS);
-    for (const [threadId, environment] of entries) this.threads.set(threadId, environment);
   }
 
   private persist(): void {
-    if (!this.path) return;
-    const payload: StoredThreadEnvironmentFile = {
-      version: 1,
-      threads: Object.fromEntries(this.threads),
-    };
-    atomicWriteFile(this.path, `${JSON.stringify(payload, null, 2)}\n`);
+    if (!this.stateFile) return;
+    // Tombstone entries the store dropped (TTL expiry, capacity bound) so a later reload of the
+    // shared JSONL does not resurrect them, then append the live authority.
+    for (const threadId of this.stateFile.threadEnvironmentIds()) {
+      if (!this.threads.has(threadId)) this.stateFile.forgetThreadEnvironment(threadId);
+    }
+    for (const [threadId, environment] of this.threads) {
+      this.stateFile.putThreadEnvironment(threadId, environment);
+    }
   }
 }

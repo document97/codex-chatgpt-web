@@ -18,15 +18,22 @@
 export const BRIDGE_COMPACTION_PREFIX = "ocx1:";
 
 /** Mirrors codex-rs core/templates/compact/prompt.md (the local-compaction instruction). */
-export const COMPACT_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+export const COMPACT_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task with no other memory of this conversation: it can read only your summary, plus whatever it re-reads from disk with its own tools. The resume model cannot see the conversation below, so every fact the work still depends on must survive in your text.
 
-Include:
-- Current progress and key decisions made
-- Important context, constraints, or user preferences
-- What remains to be done (clear next steps)
-- Any critical data, examples, or references needed to continue
+Preserve exhaustively, in organized sections:
+- The user's exact task and every explicit requirement, constraint, and preference, quoted where wording matters
+- Progress: what is DONE and verified (with the evidence), what is IN PROGRESS, what is NOT started
+- Every file path, directory, identifier, branch, URL, function/class name, and command that the work used or produced
+- All important numeric results, measurements, dimensions, versions, counts, and statuses as concrete values
+- Key decisions AND their reasons; approaches that were tried and failed, so they are not retried
+- The exact remaining steps, in order, detailed enough to execute without re-reading this history
+- Pending approvals, risks, blockers, and open questions
 
-Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
+Density rules:
+- Target roughly one twentieth of the source material's length, and never less than what preserves every operational fact listed above. A long task demands a long summary.
+- Never generalize a concrete value into a description. Write "left-hand minimum gap 5.24 mm", not "some gaps were measured".
+- Do not end with pointers like "see the attached file for details": the resume model must be able to act from your summary alone, and making it re-read files or re-run commands to recover information that was already established here is a failure of this summary.
+- Structure with Markdown headings and lists. Be exhaustive within that structure.`;
 
 /** Mirrors codex-rs core/templates/compact/summary_prefix.md (framing for a replayed summary). */
 export const SUMMARY_PREFIX = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";

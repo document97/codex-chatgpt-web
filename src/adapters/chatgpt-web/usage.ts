@@ -1,4 +1,3 @@
-import { skillFileTokens } from "./skill-attachments";
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   CHATGPT_WEB_BACKEND_MODEL,
@@ -67,7 +66,7 @@ export function estimateChatGptWebInputTokens(
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
-  experimentalSkillAttachments = false,
+  inlineConversationTokenRemaining?: number,
 ): ChatGptWebMultipartPartCount | undefined {
   if (isChatGptWebZeroRiskBackendModel(parsed.modelId)) {
     throw new Error("Bigger Context is unavailable for ChatGPT Zero Risk");
@@ -76,7 +75,12 @@ export function resolveBiggerContextMultipartParts(
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
   }
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
-  if (parsed._compactionRequest) return CHATGPT_BIGGER_CONTEXT_PARTS;
+  if (parsed._compactionRequest) {
+    // A compaction checkpoint summarizes the whole canonical history. Staging it across three
+    // inline parts cannot fit histories that outgrew the measured per-conversation boundary, and
+    // the whole-context attachment transport carries any size — so compaction never stages.
+    return undefined;
+  }
   const { contextWindow, autoCompactTokenLimit } = resolveChatGptWebContextLimits(
     CHATGPT_WEB_BACKEND_MODEL,
     mode.effort,
@@ -84,12 +88,17 @@ export function resolveBiggerContextMultipartParts(
   );
   const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
-    { experimentalMultipartParts: parts, experimentalSkillAttachments },
+    {
+      experimentalMultipartParts: parts,
+      // Bigger Context selection must measure the raw inline envelope. Otherwise the ordinary
+      // attachment fallback makes an oversized prompt appear to fit and prevents multipart from
+      // being selected even though the user explicitly enabled it.
+      disableGeneratedTextAttachments: true,
+    },
   );
   const inline = compile();
   const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
   const initialParts = biggerContextPartCount(inputTokens, autoCompactTokenLimit, false);
-  if (initialParts === CHATGPT_BIGGER_CONTEXT_PARTS) return initialParts;
 
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
     const messages = compiledChatGptWebMessages(compiled);
@@ -102,14 +111,34 @@ export function resolveBiggerContextMultipartParts(
       const { browserComposerCharLimit } = resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, capabilities);
       if (browserComposerCharLimit !== undefined && text.length > browserComposerCharLimit) return false;
       const budget = resolveChatGptWebMessageTokenBudget(
-        CHATGPT_WEB_BACKEND_MODEL, effort, capabilities, final ? estimateChatGptWebImageTokens(compiled) + skillFileTokens(compiled.skillFiles, parsed.modelId) : 0,
+        CHATGPT_WEB_BACKEND_MODEL, effort, capabilities, final ? estimateChatGptWebImageTokens(compiled) : 0,
       );
       if (estimateTokens(text, parsed.modelId) > budget) return false;
     }
+    // The measured inline boundary is cumulative per conversation: a retained chat that already
+    // spent its budget rejects even well-formed stages. Staging must then return undefined so the
+    // whole-context attachment transport — which does not ride this boundary — carries the task.
+    if (inlineConversationTokenRemaining !== undefined
+      && messages.reduce((total, text) => total + estimateTokens(text, parsed.modelId), 0)
+        > inlineConversationTokenRemaining) return false;
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId) < contextWindow * messages.length;
   };
   if (initialParts === undefined && fits(inline)) return undefined;
-  return fits(compile(2)) ? 2 : CHATGPT_BIGGER_CONTEXT_PARTS;
+  for (const parts of [2, CHATGPT_BIGGER_CONTEXT_PARTS] as const) {
+    if (parts < (initialParts ?? 2)) continue;
+    try {
+      if (fits(compile(parts))) return parts;
+    } catch {
+      // A staging plan whose records cannot fit its part budgets is not a plan. The ordinary
+      // whole-context attachment transport carries what staging cannot, so fall through instead
+      // of failing the request.
+    }
+  }
+  // Every extra part is another full browser message, so the measured per-message boundary caps the
+  // whole inline envelope (three Plus stages hold 135,000 tokens). Report a single-message plan
+  // then: the prompt moves the bulk into its whole-context attachment, which carried 82,337
+  // estimated tokens in one accepted turn while a 48,141-token inline message was rejected.
+  return undefined;
 }
 
 export function biggerContextPartCount(
@@ -121,6 +150,37 @@ export function biggerContextPartCount(
   if (inputTokens < onePartLimit) return undefined;
   if (inputTokens < onePartLimit * 2) return 2;
   return CHATGPT_BIGGER_CONTEXT_PARTS;
+}
+
+/** A yielded turn still needs room for its own handoff summary, so the reserve scales with the window. */
+const CONTEXT_YIELD_RESERVE_RATIO = 0.1;
+const CONTEXT_YIELD_MAX_RESERVE_TOKENS = 24_000;
+
+/**
+ * Token line at which the bridge must hand the turn back to Codex. Codex only evaluates automatic
+ * compaction between turns, so growth that crosses the limit inside one turn is a hard overflow
+ * instead of a compaction. Returns undefined for routes whose history never reaches that line
+ * through Codex (Luna checkpoints) or that have no bridge-driven continuation (Zero Risk).
+ */
+export function chatGptWebContextYieldTokenLimit(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+  experimentalBiggerContext = false,
+): number | undefined {
+  if (isChatGptWebZeroRiskBackendModel(parsed.modelId) || parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
+    return undefined;
+  }
+  const { effort } = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+  const { autoCompactTokenLimit } = resolveChatGptWebContextLimits(
+    CHATGPT_WEB_BACKEND_MODEL,
+    effort,
+    { ...capabilities, experimentalBiggerContext },
+  );
+  const reserve = Math.min(
+    CONTEXT_YIELD_MAX_RESERVE_TOKENS,
+    Math.round(autoCompactTokenLimit * CONTEXT_YIELD_RESERVE_RATIO),
+  );
+  return autoCompactTokenLimit - reserve;
 }
 
 function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {
@@ -144,12 +204,10 @@ export function estimateChatGptWebUsage(
   evidence: ChatGptWebRoundEvidence,
   capabilities: ChatGptWebCapabilities,
   experimentalBiggerContext = false,
-  experimentalSkillAttachments = false,
 ): CodexUsage {
   const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
-    experimentalSkillAttachments,
     experimentalMultipartParts: experimentalBiggerContext
-      ? resolveBiggerContextMultipartParts(parsed, capabilities, experimentalSkillAttachments)
+      ? resolveBiggerContextMultipartParts(parsed, capabilities)
       : undefined,
   });
   const outputTokens = conservativeTextTokens(roundEvidenceText(evidence), parsed.modelId);

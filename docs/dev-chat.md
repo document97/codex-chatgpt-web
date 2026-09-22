@@ -15,7 +15,8 @@ usable.
 - Run its browser smoke test and initialize the DEV profile. Complete MCP setup only when testing
   simulated tool rounds; browser, effort, context-limit, and compaction work in browser-only mode.
   The launcher stores any MCP credentials only in the DEV home and supervises only that isolated
-  tunnel. Create the ChatGPT connector as `Codex Native2 DEV`; keep `Codex Native2` unchanged.
+  tunnel. Reuse the existing ChatGPT connector named `Codex Native2`; it does not need to be
+  renamed or duplicated with a DEV suffix.
 
 Nothing is copied from the normal launcher. The DEV command fails closed if its own launcher,
 browser descriptor, credentials, or connector are not ready. It never falls back to the production
@@ -82,22 +83,6 @@ it to exercise the one-message composer budget and multi-chunk prompt insertion 
 history growth. The normal model-specific browser preflight still applies and fails closed above
 the measured transport limit.
 
-## Skills as files experiment
-
-**Settings → Skills as files (experimental)** is off by default in both launcher profiles.
-It uploads only skills explicitly selected in Codex and identified by native selected-skill
-metadata. Skill discovery and reading other skills through tools are unchanged. The CLI setup
-flags are `--skill-attachments` and `--inline-skills`; Zero Risk does not support automated uploads.
-
-Each UTF-8 `.txt` attachment contains the original skill envelope, including its path or resource
-authority. Its filename uses the skill name and a content digest to distinguish changed versions.
-Files are generated in memory, with no persistent file cache. Retained chats send only new context;
-a fresh chat reconstructs its attachments from canonical history. Files and images share the
-10-attachment limit, and skill content still counts toward context and message token budgets.
-An unsupported browser helper or rejected upload produces an error instead of silently omitting
-instructions. This remains experimental: moving instructions into attachments does not guarantee
-that ChatGPT will follow them more reliably.
-
 ## Bigger Context experiment
 
 Both launcher profiles expose **Bigger Context (experimental)** in Settings. It is disabled by
@@ -144,7 +129,7 @@ Luna's later requests still include the accumulated transcript inside the same m
 28,000-token browser transport budget.
 
 Browser-only chats do not advertise outer tools and never claim simulated effects. Full setup keeps
-the launcher-owned DEV tunnel ready so ChatGPT can create and validate `Codex Native2 DEV` before a
+the launcher-owned DEV tunnel ready so ChatGPT can validate `Codex Native2` before a
 CLI chat starts. Each named chat attaches its broker to that tunnel, while every dispatched action
 still returns an explicit simulation receipt.
 

@@ -51,11 +51,46 @@ function sanitizeForExport(value, seen = new WeakSet()) {
   );
 }
 
-function exportSanitizedLogs({ filePath, destinationPath }) {
+// The Windows daemon writes straight to its own file so it can outlive the launcher console, which
+// keeps it out of launcher.jsonl. Its lines carry no timestamp, so only relative order survives.
+const TEXT_LOG_TAIL_LINES = 4_000;
+
+function appendTextLogTail(records, textPath, exportedAt) {
+  const sourceFile = path.basename(textPath);
+  let lines;
+  try {
+    lines = fs.readFileSync(textPath, "utf8").split(/\r?\n/).filter(Boolean);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return;
+    throw error;
+  }
+  const tail = lines.slice(-TEXT_LOG_TAIL_LINES);
+  records.push({
+    at: exportedAt,
+    level: "info",
+    event: "runtime.text_log_tail",
+    detail: { sourceFile, lines: tail.length, omittedLines: lines.length - tail.length },
+  });
+  tail.forEach((line, index) => {
+    records.push({
+      at: exportedAt,
+      level: "info",
+      event: "runtime.text_log_line",
+      detail: { sourceFile, seq: index + 1, line: sanitizeForExport(line) },
+    });
+  });
+}
+
+function exportSanitizedLogs({ filePath, destinationPath, textLogPaths = [] }) {
   const sourcePaths = [`${filePath}.1`, filePath];
   const destination = path.resolve(destinationPath);
   if (sourcePaths.some(sourcePath => path.resolve(sourcePath) === destination)) {
     throw new Error("Refusing to overwrite a launcher source log with an exported diagnostic");
+  }
+  for (const textPath of textLogPaths) {
+    if (path.resolve(textPath) === destination) {
+      throw new Error("Refusing to overwrite a runtime source log with an exported diagnostic");
+    }
   }
   const records = [];
   for (const sourcePath of sourcePaths) {
@@ -84,6 +119,8 @@ function exportSanitizedLogs({ filePath, destinationPath }) {
       } catch {}
     }
   }
+  const exportedAt = new Date().toISOString();
+  for (const textPath of textLogPaths) appendTextLogTail(records, textPath, exportedAt);
   fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     destination,

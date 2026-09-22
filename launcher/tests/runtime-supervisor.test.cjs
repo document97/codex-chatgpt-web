@@ -1376,6 +1376,59 @@ test(`launcher supervisor forwards exact trace cancellation: ${reason ?? "user c
   assert.equal(result.trace_id, "trace_exact");
 });
 
+test("native fallback handoff preserves in-flight native Codex requests", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-handoff-"));
+  const descriptorPath = path.join(root, "runtime", "launcher.json");
+  fs.mkdirSync(path.dirname(descriptorPath), { recursive: true });
+  fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(launcherConfig(descriptorPath))}\n`);
+  const actions = [];
+  const daemon = {
+    pid: 123_456_781,
+    exitCode: null,
+    signalCode: null,
+    stdout: { destroy() { actions.push("detach-stdout"); } },
+    stderr: { destroy() { actions.push("detach-stderr"); } },
+    unref() { actions.push("unref"); },
+  };
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: descriptorPath,
+  });
+  supervisor.daemon = daemon;
+  supervisor.cancelActiveTurns = async () => {
+    throw new Error("handoff must not cancel active native requests");
+  };
+  supervisor.control = async (_config, action, options) => {
+    actions.push(action);
+    assert.deepEqual(options.body, { watchedPids: [321], maxLifetimeMs: 60_000 });
+    return { status: "ok", native_fallback_only: true, native_route_restored: true };
+  };
+  supervisor.tryWriteState = status => {
+    actions.push(`state:${status}`);
+    return true;
+  };
+
+  try {
+    assert.deepEqual(
+      await supervisor.handoffNativeFallback([321], 60_000),
+      { status: "native-fallback", daemonPid: daemon.pid, watchedPids: [321] },
+    );
+    assert.deepEqual(actions, [
+      "native-fallback",
+      "state:native-fallback",
+      "detach-stdout",
+      "detach-stderr",
+      "unref",
+    ]);
+    assert.equal(supervisor.daemon, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("explicit launcher shutdown force-stops only its owned runtime when graceful shutdown fails", async () => {
   const actions = [];
   const supervisor = new RuntimeSupervisor({

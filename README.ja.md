@@ -37,6 +37,8 @@ Full ハーネスモードでは、MCP を通じて ChatGPT を現在のタス�
 
 ブラウザーとランタイムはアプリに含まれています。Chrome、Node、Bun の別途インストールは不要です。
 
+> **プラットフォームについて:** 自動化 CI が検証するのは Windows（x64）、Linux（x64）、Apple Silicon（arm64）の macOS です。Intel（x64）の macOS は CI 検証の対象外です。
+
 <details>
 <summary><strong>ターミナルからのインストール・更新・修復</strong></summary>
 

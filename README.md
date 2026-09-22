@@ -37,8 +37,9 @@ Full harness mode connects ChatGPT to the current task’s files, terminal, tool
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 
+> **Platform note:** Automated CI verifies Windows (x64), Linux (x64), and macOS on Apple Silicon (arm64). macOS on Intel (x64) is not covered by CI verification.
+
 <details>
-<summary><strong>Terminal install, updates & repair</strong></summary>
 
 Quit the launcher before updating. These installers select the platform and architecture, verify the published checksums, and preserve your ChatGPT profile and launcher settings.
 

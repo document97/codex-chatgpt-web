@@ -312,28 +312,6 @@ code {
   flex: none;
 }
 
-.sidebar-brand-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.sidebar-brand-actions .icon-button {
-  width: 28px;
-  height: 28px;
-  color: var(--color-icon-tertiary);
-}
-
-.sidebar-brand-actions .icon-button svg {
-  width: 22px;
-  height: 22px;
-}
-
-.sidebar-brand-actions .icon-button:hover {
-  background: transparent;
-  color: var(--color-icon-primary);
-}
-
 .sidebar-nav {
   min-height: 0;
   flex: 1;

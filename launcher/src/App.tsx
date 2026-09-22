@@ -523,18 +523,6 @@ function LauncherShell({
                 <strong>{copy.product}</strong>
                 {devProfile ? <em className="dev-profile-badge">{copy.devBadge}</em> : null}
               </div>
-              <div className="sidebar-brand-actions">
-                <IconButton
-                  icon="github"
-                  label="GitHub"
-                  onClick={() => void api!.openExternal(snapshot.urls.github).catch((cause) => setError(messageOf(cause)))}
-                />
-                <IconButton
-                  icon="x"
-                  label="X"
-                  onClick={() => void api!.openExternal(snapshot.urls.x).catch((cause) => setError(messageOf(cause)))}
-                />
-              </div>
             </div>
 
             <nav className="sidebar-nav" aria-label={copy.workspace}>

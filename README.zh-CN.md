@@ -37,8 +37,9 @@
 
 应用已包含浏览器和运行时。
 
+> **平台说明：** 自动化 CI 仅验证 Windows（x64）、Linux（x64）和 Apple Silicon（arm64）的 macOS；Intel（x64）macOS 不在 CI 验证范围内。
+
 <details>
-<summary><strong>命令行安装、更新与修复</strong></summary>
 
 更新前请退出启动器。以下安装脚本会选择正确的平台和架构、验证发布的校验和，并保留 ChatGPT 配置文件和启动器设置。
 

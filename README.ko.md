@@ -37,6 +37,8 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 
 브라우저와 런타임이 앱에 포함되어 있습니다. Chrome, Node, Bun을 따로 설치할 필요가 없습니다.
 
+> **플랫폼 안내:** 자동화된 CI는 Windows(x64), Linux(x64), Apple Silicon(arm64) macOS만 검증합니다. Intel(x64) macOS는 CI 검증 대상이 아닙니다.
+
 <details>
 <summary><strong>터미널 설치, 업데이트 및 복구</strong></summary>
 

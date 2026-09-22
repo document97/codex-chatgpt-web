@@ -1,5 +1,7 @@
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
@@ -35,7 +37,7 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 
 브라우저와 런타임이 앱에 포함되어 있습니다. Chrome, Node, Bun을 따로 설치할 필요가 없습니다.
 
-> **플랫폼 안내:** 자동화된 CI는 Windows(x64), Linux(x64), Apple Silicon(arm64) macOS만 검증합니다. Intel(x64) macOS는 CI 검증 대상이 아닙니다. 릴리스는 Windows 설치 프로그램만 게시합니다. macOS/Linux에서는 bun run app:package로 소스에서 빌드하세요.
+> **플랫폼 안내:** 자동화된 CI는 Windows(x64), Linux(x64), Apple Silicon(arm64) macOS만 검증하며 릴리스도 이 세 플랫폼만 게시합니다. Intel(x64) macOS는 게시 및 CI 검증 대상이 모두 아니므로 bun run app:package로 소스에서 빌드하세요.
 
 <details>
 <summary><strong>터미널 설치, 업데이트 및 복구</strong></summary>

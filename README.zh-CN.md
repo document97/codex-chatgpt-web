@@ -3,7 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
@@ -35,7 +37,7 @@
 
 应用已包含浏览器和运行时。
 
-> **平台说明：** 自动化 CI 仅验证 Windows（x64）、Linux（x64）和 Apple Silicon（arm64）的 macOS；Intel（x64）macOS 不在 CI 验证范围内。发布仅提供 Windows 安装包——macOS/Linux 请运行 bun run app:package 从源码构建。
+> **平台说明：** 自动化 CI 仅验证 Windows（x64）、Linux（x64）和 Apple Silicon（arm64）的 macOS，发布也仅包含这三个平台；Intel（x64）macOS 不发布、也不在 CI 验证范围内——请运行 bun run app:package 从源码构建。
 
 <details>
 

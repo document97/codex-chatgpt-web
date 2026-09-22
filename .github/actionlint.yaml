@@ -4,3 +4,7 @@ paths:
     # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
     ignore:
       - 'label "macos-15-intel" is unknown'
+  .github/workflows/ci.yml:
+    # macos-26 shipped after actionlint v1.7.7's label table; macos-latest already points to it.
+    ignore:
+      - 'label "macos-26" is unknown'

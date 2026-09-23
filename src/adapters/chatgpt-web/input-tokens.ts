@@ -1,8 +1,9 @@
-import { CHATGPT_WEB_PLATFORM_RESERVE_TOKENS, chatGptWebImageTokenReserve } from "../../chatgpt-web-models";
+import { CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT, CHATGPT_WEB_PLATFORM_RESERVE_TOKENS, chatGptWebImageTokenReserve } from "../../chatgpt-web-models";
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
+  type ChatGptWebPromptFile,
   type CompiledChatGptWebPrompt,
 } from "./prompt";
 
@@ -48,7 +49,7 @@ export function estimateCompiledChatGptWebInputTokens(
 ): number {
   const imageTokens = estimateChatGptWebImageTokens(compiled);
   const fileTokens = (compiled.files ?? []).reduce(
-    (total, file) => total + (file.estimatedTokens ?? 0),
+    (total, file) => total + (file.estimatedTokens ?? estimateChatGptWebUploadedFileTokens(file)),
     0,
   );
   const messageTokens = compiledChatGptWebMessages(compiled)
@@ -76,4 +77,39 @@ export function estimateChatGptWebImageTokens(compiled: CompiledChatGptWebPrompt
     (total, image) => total + chatGptWebImageTokenReserve(image.detail),
     0,
   );
+}
+
+/** Local path pushes carry raw base64; inline `input_file` pushes may carry a full data URL. */
+function decodeUploadedFileBytes(data: string): Buffer {
+  if (!data.startsWith("data:")) return Buffer.from(data, "base64");
+  const comma = data.indexOf(",");
+  if (comma < 0) return Buffer.alloc(0);
+  const header = data.slice(0, comma);
+  const payload = data.slice(comma + 1);
+  if (/;base64$/i.test(header)) return Buffer.from(payload, "base64");
+  try {
+    return Buffer.from(decodeURIComponent(payload), "utf8");
+  } catch {
+    return Buffer.from(payload, "utf8");
+  }
+}
+
+/**
+ * User file uploads (local paths and inline `input_file` blocks) arrive as raw bytes that ChatGPT
+ * parses server-side, so unlike generated textual files they carry no `estimatedTokens` and would
+ * otherwise count zero against Codex's context indicator. Tier the estimate by what the bytes become
+ * in the model's context: audio/video gets the same flat reserve as images (server-side media
+ * handling, not raw bytes), recognized text is tokenized exactly, and binary documents fall back to
+ * 4 bytes per token of extracted text, capped at the measured single-attachment ceiling so one large
+ * upload cannot demand more room than ChatGPT has ever accepted through this carrier.
+ */
+export function estimateChatGptWebUploadedFileTokens(file: ChatGptWebPromptFile): number {
+  if (file.mimeType.startsWith("audio/") || file.mimeType.startsWith("video/")) {
+    return chatGptWebImageTokenReserve();
+  }
+  const bytes = decodeUploadedFileBytes(file.data);
+  if (bytes.includes(0) || !Buffer.from(bytes.toString("utf8"), "utf8").equals(bytes)) {
+    return Math.min(Math.ceil(bytes.length / 4), CHATGPT_WEB_CONTEXT_ATTACHMENT_TOKEN_LIMIT);
+  }
+  return estimateTokens(bytes.toString("utf8"));
 }

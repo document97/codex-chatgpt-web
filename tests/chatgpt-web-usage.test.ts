@@ -186,11 +186,44 @@ test("the yield line spends only the reserve-free part of the product context li
   const plus = { ...capabilities, proAvailable: false };
   // Plus high compacts at 80,000; the handoff round itself keeps a 10% reserve.
   expect(chatGptWebContextYieldTokenLimit(web, plus, false)).toBe(80_000 - 8_000);
-  // Bigger Context triples the product limit, while the reserve stops scaling past 24,000.
-  expect(chatGptWebContextYieldTokenLimit(web, plus, true)).toBe(240_000 - 24_000);
+  // Bigger Context triples only the transport window; the yield line stays on the measured
+  // deliverable envelope so the turn hands off before the browser fails (2026-09-23 incident).
+  expect(chatGptWebContextYieldTokenLimit(web, plus, true)).toBe(80_000 - 8_000);
   expect(chatGptWebContextYieldTokenLimit(web, capabilities, false)).toBe(95_000 - 9_500);
   // Luna carries history through its own checkpoint and Zero Risk has no bridge-driven continuation.
   expect(chatGptWebContextYieldTokenLimit(
     { ...request("small task"), modelId: CHATGPT_WEB_LUNA_MODEL_ID }, capabilities, false,
   )).toBeUndefined();
+});
+
+test("file attachments join the context-ring estimate instead of counting as zero", () => {
+  const baseline = estimateChatGptWebInputTokens(request("summarize the attachment"), capabilities);
+  const withFile = (filename: string, fileData: string): number => {
+    const parsed = request("summarize the attachment");
+    parsed.context.messages.push({
+      role: "user",
+      content: [
+        { type: "text", text: "summarize the attachment" },
+        { type: "file", filename, fileData },
+      ],
+      timestamp: 3,
+    });
+    return estimateChatGptWebInputTokens(parsed, capabilities) - baseline;
+  };
+
+  // Recognized text is tokenized exactly; the file_attachment record rides along for free.
+  const body = `attachment body ${"word ".repeat(4_000)}`;
+  expect(withFile("notes.md", `data:text/markdown;base64,${Buffer.from(body).toString("base64")}`))
+    .toBeGreaterThanOrEqual(estimateTokens(body));
+
+  // Binary documents fall back on 4 bytes per token and stop at the 82,000 single-attachment
+  // ceiling: 400,000 bytes would be 100,000 tokens if left uncapped.
+  const pdfGrowth = withFile("scan.pdf", `data:application/pdf;base64,${Buffer.alloc(400_000, 0x80).toString("base64")}`);
+  expect(pdfGrowth).toBeGreaterThanOrEqual(82_000);
+  expect(pdfGrowth).toBeLessThan(83_500);
+
+  // Media is a flat composer reserve like images, not a function of raw byte length.
+  const audioGrowth = withFile("clip.mp3", `data:audio/mpeg;base64,${Buffer.from([0xFF, 0xFB, 0x90, 0x64]).toString("base64")}`);
+  expect(audioGrowth).toBeGreaterThanOrEqual(1_024);
+  expect(audioGrowth).toBeLessThan(2_500);
 });

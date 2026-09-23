@@ -17,7 +17,7 @@ import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import {
   CODEX_ACTIVE_COMPACTION_REQUEST_MARKER,
 } from "../src/adapters/chatgpt-web/native-compaction-control";
-import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
+import { CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION, chatGptReadOnlyContextWarning, compileChatGptWebPrompt, withoutSupersededModelSwitchContracts } from "../src/adapters/chatgpt-web/prompt";
 import { MAX_CHATGPT_WEB_TURN_RETRIES } from "../src/adapters/chatgpt-web/retry-policy";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSessions, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
@@ -2338,6 +2338,140 @@ describe("ChatGPT outer-native harness v4", () => {
       await TurnBroker.forSocket(socketPath).close();
     }
   });
+
+/**
+ * Drives a retained browser turn through one Codex tool round and hands back the result the adapter
+ * delivered into the browser, so the context-budget handoff contract can be asserted on the exact
+ * bytes the retained conversation receives.
+ */
+async function runHarnessToolRound(options: {
+  socketName: string;
+  toolResultContent: string;
+}): Promise<{ delivered: BrokerToolResult; browserStarts: number; finalEvents: AdapterEvent[] }> {
+  const socketPath = brokerTestEndpoint(`cgw-${options.socketName}-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://chatgpt-${options.socketName}`,
+    chatgptWeb: {
+      // The tool-round budget handoff only arms for a launcher-retained conversation, so the
+      // fixture must advertise the same browser host the shipped launcher uses.
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(tempRoot, `${options.socketName}-launcher.json`),
+      brokerSocketPath: socketPath,
+      turnTimeoutMs: 30_000,
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  let browserStarts = 0;
+  let delivered: BrokerToolResult | undefined;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserStarts += 1;
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("turn token missing from compiled prompt");
+      const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+      delivered = await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        wireName: "exec_command",
+        freeform: false,
+        arguments: { cmd: "collect-evidence", workdir: tempRoot },
+      }, 30_000));
+      turn.onTextDelta("Evidence delivered.");
+      return "Evidence delivered.";
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const adapter = createChatGptWebAdapter(provider);
+  try {
+    const initial = rawWireRequest(environmentXml);
+    const firstEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
+    const call = firstEvents.find(
+      (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
+    );
+    if (!call) throw new Error("browser turn did not request a tool");
+
+    const continuation = structuredClone(initial);
+    continuation.context.messages.push(
+      {
+        role: "assistant" as const,
+        content: [{
+          type: "toolCall" as const,
+          id: call.id,
+          name: "exec_command",
+          arguments: { cmd: "collect-evidence", workdir: tempRoot },
+        }],
+        timestamp: 3,
+      },
+      {
+        role: "toolResult" as const,
+        toolCallId: call.id,
+        toolName: "exec_command",
+        content: options.toolResultContent,
+        isError: false,
+        timestamp: 4,
+      },
+    );
+    ((continuation._rawBody as { input: unknown[] }).input).push(
+      {
+        type: "function_call",
+        call_id: call.id,
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "collect-evidence", workdir: tempRoot }),
+      },
+      { type: "function_call_output", call_id: call.id, output: options.toolResultContent },
+    );
+
+    const finalEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
+    if (!delivered) throw new Error("adapter never delivered the tool result to the browser");
+    return { delivered, browserStarts, finalEvents };
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+}
+
+test("an exhausted context budget routes the last tool batch into a resumable handoff", async () => {
+  // 600 kB of tool output projects far past the Pro window's yield line, so the adapter owes the
+  // model the budget instruction before the retained browser spends another round on tools.
+  const largeOutput = "abcdefghij0123456789 ".repeat(30_000);
+  const { delivered, browserStarts, finalEvents } = await runHarnessToolRound({
+    socketName: "budget-handoff",
+    toolResultContent: JSON.stringify({ output: largeOutput, exit_code: 0 }),
+  });
+
+  expect(browserStarts).toBe(1);
+  const content = delivered.content as Array<{ type: string; text?: string }>;
+  expect(content).toHaveLength(2);
+  expect(content[0]!.text).toContain("abcdefghij0123456789");
+  expect(content.at(-1)).toEqual({ type: "text", text: CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION });
+  // The instruction ends the tool rounds inside the retained conversation; the turn itself still
+  // settles on the model's own visible answer instead of a transport overflow.
+  expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+});
+
+test("a tool round with headroom keeps the budget instruction out of the delivered result", async () => {
+  const { delivered, browserStarts } = await runHarnessToolRound({
+    socketName: "budget-headroom",
+    toolResultContent: JSON.stringify({ output: "ok", exit_code: 0 }),
+  });
+
+  expect(browserStarts).toBe(1);
+  const content = delivered.content as Array<{ type: string; text?: string }>;
+  expect(content).toHaveLength(1);
+  expect(content.some(part => part.text === CHATGPT_WEB_CONTEXT_BUDGET_INSTRUCTION)).toBeFalse();
+  expect(content[0]!.text).toContain("\"ok\"");
+});
 
   test("automatic Full turns do not accept browser progress until codex_turn_complete", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h4-explicit-completion-${process.pid}-${Date.now()}`);

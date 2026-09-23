@@ -2283,23 +2283,6 @@ code {
   color: var(--color-icon-tertiary);
 }
 
-.welcome-option.is-social {
-  grid-template-columns: 34px minmax(0, 1fr) 16px;
-}
-
-.welcome-option.is-social.is-complete {
-  color: var(--color-text-primary);
-}
-
-.welcome-option.is-social.is-complete > span:first-child {
-  border-color: var(--color-border-heavy);
-  color: var(--color-icon-secondary);
-}
-
-.welcome-option.is-social.is-complete > svg {
-  color: var(--color-text-success);
-}
-
 .welcome-footer {
   display: grid;
   min-height: 74px;

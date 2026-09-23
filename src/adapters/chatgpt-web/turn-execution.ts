@@ -755,10 +755,20 @@ export class ChatGptTurnSessions {
     turnId: string,
     reason: Error,
   ): { cancelled: number; settlement: Promise<void> } {
-    const matches = [...this.entries].filter(([, session]) => (
-      session.nativeThreadId === threadId
-      && session.nativeTurnId === turnId
-    ));
+    // Match by the globally unique native turn id alone: the hook's turn_id (Codex
+    // turn_context.sub_id) is the same value Codex stamps into the request metadata that
+    // registered the session. Since Codex 0.155 (openai/codex PR #22268) the hook payload's
+    // session_id is the shared hook-session identity rather than the thread id, so the reported
+    // thread id is diagnostic-only and must never gate cancellation.
+    const matches = [...this.entries].filter(([, session]) => session.nativeTurnId === turnId);
+    const foreignThreadIds = new Set(matches
+      .map(([, session]) => session.nativeThreadId)
+      .filter(nativeThreadId => nativeThreadId !== undefined && nativeThreadId !== threadId));
+    if (foreignThreadIds.size > 0) {
+      console.info(`[chatgpt-web] interrupt identity note: turn ${turnId} matched by turn_id; `
+        + `hook-reported id ${threadId} differs from registered thread id(s) `
+        + `${[...foreignThreadIds].join(", ")} (Codex >=0.155 reports the shared hook session id)`);
+    }
     for (const [key, session] of matches) {
       if (this.entries.get(key) !== session) continue;
       this.entries.delete(key);

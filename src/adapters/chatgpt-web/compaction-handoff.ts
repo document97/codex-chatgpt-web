@@ -396,15 +396,18 @@ const structuredCompactionOwners = new Map<string, Promise<void>>();
 const structuredCompactionInterruptions = new Map<string, StructuredCompactionInterruption>();
 const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
 
-function nativeTurnIdentityKey(threadId: string, turnId: string): string {
-  if (!threadId.trim() || !turnId.trim()) {
-    throw new Error("Structured compaction requires non-empty native thread and turn ids");
+// The native turn id is the only identity shared verbatim between Codex Interrupt hook payloads
+// and Responses request metadata: since Codex 0.155 (openai/codex PR #22268) hook payloads report
+// the shared hook session id instead of the thread id, so thread ids must never gate matching.
+function nativeTurnIdentityKey(turnId: string): string {
+  if (!turnId.trim()) {
+    throw new Error("Structured compaction requires a non-empty native turn id");
   }
-  return JSON.stringify([threadId, turnId]);
+  return JSON.stringify(turnId);
 }
 
-function rememberStructuredCompactionInterruption(threadId: string, turnId: string, reason: Error): void {
-  const identity = nativeTurnIdentityKey(threadId, turnId);
+function rememberStructuredCompactionInterruption(turnId: string, reason: Error): void {
+  const identity = nativeTurnIdentityKey(turnId);
   const now = Date.now();
   pruneStructuredCompactionInterruptions(now);
   const existing = structuredCompactionInterruptions.get(identity);
@@ -416,11 +419,11 @@ function rememberStructuredCompactionInterruption(threadId: string, turnId: stri
 }
 
 function structuredCompactionInterruption(owner: StructuredCompactionOwner): Error | undefined {
-  if (owner.nativeThreadId === undefined && owner.nativeTurnId === undefined) return undefined;
+  // Only native turns carry a turn id, and hook payloads always report one; an owner without a
+  // native turn id can never match a remembered interruption.
+  if (owner.nativeTurnId === undefined) return undefined;
   pruneStructuredCompactionInterruptions();
-  return structuredCompactionInterruptions.get(
-    nativeTurnIdentityKey(owner.nativeThreadId ?? "", owner.nativeTurnId ?? ""),
-  )?.reason;
+  return structuredCompactionInterruptions.get(nativeTurnIdentityKey(owner.nativeTurnId))?.reason;
 }
 
 function pruneStructuredCompactionInterruptions(now = Date.now()): void {
@@ -510,10 +513,12 @@ export function cancelStructuredCompactionNativeTurn(
   // Record before scanning active owners. Registration and cancellation share this synchronous
   // boundary, so either registration wins and is aborted below, or interruption wins and the later
   // registration rejects without invoking its detached work.
-  rememberStructuredCompactionInterruption(threadId, turnId, reason);
+  // Match by turn id alone (see nativeTurnIdentityKey): the hook-reported thread id is the shared
+  // hook session id on Codex >=0.155 and is diagnostic-only.
+  void threadId;
+  rememberStructuredCompactionInterruption(turnId, reason);
   const runs = [...structuredCompactionRuns.values()].filter(run => (
     run.active
-    && run.nativeThreadId === threadId
     && run.nativeTurnId === turnId
   ));
   for (const run of runs) {

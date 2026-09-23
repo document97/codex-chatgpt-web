@@ -529,6 +529,55 @@ test("native interruption before registration prevents the detached compaction f
   expect(unrelatedStarted).toBeTrue();
 });
 
+test("native interruption remembered under the hook session id still blocks the owning thread's compaction", async () => {
+  const key = `interrupt-hook-session-${Date.now()}-${Math.random()}`;
+  const reason = new DOMException("Codex turn interrupted", "AbortError");
+  // Codex >=0.155 hook payloads report the shared hook session id instead of the thread id.
+  const cancellation = cancelStructuredCompactionNativeTurn("hook_shared_session_id", `turn-${key}`, reason);
+  expect(cancellation.cancelled).toBe(0);
+  await cancellation.settlement;
+
+  let started = false;
+  const run = runStructuredCompactionOnce(key, {
+    ownerKey: `owner-${key}`,
+    traceIds: [`trace-${key}`],
+    nativeThreadId: `thread-${key}`,
+    nativeTurnId: `turn-${key}`,
+  }, async () => {
+    started = true;
+    return "must not start";
+  });
+  await expect(run).rejects.toBe(reason);
+  expect(started).toBeFalse();
+});
+
+test("an active compaction is cancelled by native turn id when the hook reports the shared session id", async () => {
+  const key = `interrupt-active-hook-session-${Date.now()}-${Math.random()}`;
+  let aborted = false;
+  const run = runStructuredCompactionOnce(key, {
+    ownerKey: `owner-${key}`,
+    traceIds: [`trace-${key}`],
+    nativeThreadId: `thread-${key}`,
+    nativeTurnId: `turn-${key}`,
+  }, signal => new Promise<string>((_resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      aborted = true;
+      reject(signal.reason);
+    }, { once: true });
+  }));
+  await Bun.sleep(0);
+
+  const cancellation = cancelStructuredCompactionNativeTurn(
+    "hook_shared_session_id",
+    `turn-${key}`,
+    new DOMException("Codex turn interrupted", "AbortError"),
+  );
+  expect(cancellation.cancelled).toBe(1);
+  await cancellation.settlement;
+  await expect(run).rejects.toThrow("Codex turn interrupted");
+  expect(aborted).toBeTrue();
+});
+
 test("a completed exact compaction remains replayable after a later native interruption", async () => {
   const key = `completed-before-interrupt-${Date.now()}-${Math.random()}`;
   const owner = {
@@ -594,15 +643,22 @@ test("a duplicate native interruption refreshes its lifetime without replacing i
   }
 });
 
-test("structured compaction rejects incomplete native interruption identities", () => {
+test("structured compaction rejects incomplete native interruption identities", async () => {
   const reason = new DOMException("Codex turn interrupted", "AbortError");
-  expect(() => cancelStructuredCompactionNativeTurn(" ", "turn_valid", reason))
-    .toThrow("non-empty native thread and turn ids");
-  expect(() => runStructuredCompactionOnce(
-    `incomplete-native-owner-${Date.now()}-${Math.random()}`,
-    { ownerKey: "incomplete-native-owner", traceIds: [], nativeThreadId: "thread_valid" },
-    async () => "must not start",
-  )).toThrow("non-empty native thread and turn ids");
+  // The turn id is the only interruption key; a blank turn id can never be matched or remembered.
+  expect(() => cancelStructuredCompactionNativeTurn("thread_valid", " ", reason))
+    .toThrow("non-empty native turn id");
+  expect(() => cancelStructuredCompactionNativeTurn(" ", " ", reason))
+    .toThrow("non-empty native turn id");
+  // Since Codex 0.155 (openai/codex PR #22268) the hook-reported thread id is the shared hook
+  // session id: a blank or mismatching thread id is diagnostic-only and must not be rejected.
+  expect(cancelStructuredCompactionNativeTurn(" ", "turn_blank_thread_ok", reason).cancelled).toBe(0);
+  // An owner without a native turn id can never be hook-interrupted, so it starts normally.
+  await expect(runStructuredCompactionOnce(
+    `no-native-turn-owner-${Date.now()}-${Math.random()}`,
+    { ownerKey: "no-native-turn-owner", traceIds: [], nativeThreadId: "thread_valid" },
+    async () => "runs without a native turn id",
+  )).resolves.toBe("runs without a native turn id");
 });
 
 test("active compaction settles canonical tool results before the separate retained handoff", async () => {

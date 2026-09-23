@@ -157,7 +157,10 @@ export class HttpTurnCounter {
   private nextId = 1;
 
   private identityKey(identity: NativeCodexTurnIdentity): string {
-    return `${identity.threadId}\u0000${identity.turnId}`;
+    // Key by the globally unique native turn id alone: since Codex 0.155 (openai/codex PR #22268)
+    // Interrupt hook payloads report the shared hook session id instead of the thread id, so the
+    // thread id differs between the hook-side interrupt and the request-side identity binding.
+    return identity.turnId;
   }
 
   private rememberInterrupted(identity: NativeCodexTurnIdentity, reason: unknown): void {
@@ -200,9 +203,9 @@ export class HttpTurnCounter {
     reason: unknown = new DOMException("Codex turn interrupted", "AbortError"),
   ): { cancelled: number; settlement: Promise<void> } {
     this.rememberInterrupted(identity, reason);
-    const turns = [...this.active.values()].filter(turn => (
-      turn.identity?.threadId === identity.threadId && turn.identity.turnId === identity.turnId
-    ));
+    // Match by turn id alone (see identityKey): the hook-reported thread id is the shared hook
+    // session id on Codex >=0.155 and cannot identify the request-bound thread.
+    const turns = [...this.active.values()].filter(turn => turn.identity?.turnId === identity.turnId);
     for (const turn of turns) {
       if (!turn.abort.signal.aborted) turn.abort.abort(reason);
     }
@@ -1165,6 +1168,19 @@ export function startServer(
             }
           }
         });
+        console.info(`[chatgpt-web] interrupt-turn turn=${identity.turnId} hook_reported=${identity.threadId} `
+          + `cancelled_browser=${browserCancellation.cancelled} cancelled_compaction=${compactionCancellation.cancelled} `
+          + `cancelled_http=${httpCancellation.cancelled}`);
+        if (browserCancellation.cancelled === 0
+          && compactionCancellation.cancelled === 0
+          && httpCancellation.cancelled === 0
+          && (chatGptTurnSessions.activeCount() > 0 || httpTurns.count() > 0)) {
+          // Cancellation is keyed by the native turn id alone; a total miss while turns are active
+          // means the hook and the bridge disagree on identity again and must be investigated.
+          console.warn(`[chatgpt-web] interrupt-turn matched no active turn (turn=${identity.turnId}, `
+            + `hook_reported=${identity.threadId}) while ${chatGptTurnSessions.activeCount()} browser and `
+            + `${httpTurns.count()} http turns are active`);
+        }
         return Response.json({
           status: "ok",
           cancelled_http_turns: httpCancellation.cancelled,
@@ -1184,6 +1200,8 @@ export function startServer(
           httpTurns.cancelAll(reason),
           compactionCancellation,
         ]);
+        console.info(`[chatgpt-web] cancel-turns cancelled_browser=${cancelledBrowserTurns} `
+          + `cancelled_http=${cancelledHttpTurns} cancelled_compaction=${cancelledCompactionRuns}`);
         return Response.json({
           status: "ok",
           cancelled_http_turns: cancelledHttpTurns,

@@ -453,6 +453,9 @@ async function interruptHookCommand(args: string[]): Promise<void> {
     if (bytes > 32 * 1024) throw new Error("Codex Interrupt hook payload is too large");
     chunks.push(buffer);
   }
+  // Codex >=0.155 (openai/codex PR #22268) reports the shared hook-session id as `session_id`
+  // instead of the thread id, and hook payloads carry no thread id at all; only `turn_id` is
+  // authoritative. The daemon matches cancellations by turn id alone.
   let payload: { hook_event_name?: unknown; session_id?: unknown; turn_id?: unknown };
   try {
     payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));

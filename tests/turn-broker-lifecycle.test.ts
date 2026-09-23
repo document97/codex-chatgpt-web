@@ -71,7 +71,11 @@ test("targeted tab cancellation settles one trace and keeps a terminal replay to
   sessions.clear();
 });
 
-test("native interruption retires only the exact browser turn identity", async () => {
+test("native interruption retires browser turns by the native turn id regardless of the reported thread/session id", async () => {
+  // Since Codex 0.155 (openai/codex PR #22268) the Interrupt hook reports the shared hook session
+  // id instead of the thread id, so cancellation keys on the globally unique turn id alone. A
+  // shared turn id is the same Codex turn (for example a recovery browser turn of that turn) and
+  // must be cancelled together; a different turn of the same thread must survive.
   const sessions = new ChatGptTurnSessions();
   const cancelled: string[] = [];
   const runtime = (name: string) => {
@@ -98,24 +102,33 @@ test("native interruption retires only the exact browser turn identity", async (
     "thread_target",
   );
   sessions.getOrCreate(
-    "other-thread",
-    () => runtime("other-thread"),
-    "trace_other",
-    "owner_other",
+    "same-turn",
+    () => runtime("same-turn"),
+    "trace_same_turn",
+    "owner_same_turn",
     "turn_shared",
     "thread_other",
   );
+  sessions.getOrCreate(
+    "other-turn",
+    () => runtime("other-turn"),
+    "trace_other_turn",
+    "owner_other_turn",
+    "turn_other",
+    "thread_target",
+  );
 
   const cancellation = sessions.cancelNativeTurn(
-    "thread_target",
+    "hook_shared_session_id",
     "turn_shared",
     new DOMException("Codex turn interrupted", "AbortError"),
   );
-  expect(cancellation.cancelled).toBe(1);
+  expect(cancellation.cancelled).toBe(2);
   await cancellation.settlement;
-  expect(cancelled).toEqual(["target"]);
+  expect([...cancelled].sort()).toEqual(["same-turn", "target"]);
   expect(sessions.find("target")).toBeUndefined();
-  expect(sessions.find("other-thread")?.nativeThreadId).toBe("thread_other");
+  expect(sessions.find("same-turn")).toBeUndefined();
+  expect(sessions.find("other-turn")?.nativeTurnId).toBe("turn_other");
   expect(sessions.activeCount()).toBe(1);
   sessions.clear();
 });

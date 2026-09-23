@@ -288,7 +288,7 @@ test("HTTP turn cancellation aborts the tracked request and waits for lifecycle 
   expect(turns.count()).toBe(0);
 });
 
-test("native Codex interrupt cancels only HTTP streams owned by the exact thread and turn", async () => {
+test("native Codex interrupt cancels only HTTP streams owned by the exact native turn id", async () => {
   const turns = new HttpTurnCounter();
   const started: Promise<Response>[] = [];
   const aborted: string[] = [];
@@ -335,6 +335,42 @@ test("native Codex interrupt remains authoritative when it arrives before HTTP i
   bind();
   expect((await response).status).toBe(499);
   expect(observedAbort).toBeTrue();
+  await waitForTurnCount(turns, 0);
+});
+
+test("native Codex interrupt keys HTTP cancellation on the turn id when the hook reports the shared session id", async () => {
+  // Codex >=0.155 (openai/codex PR #22268) Interrupt hook payloads carry the shared hook session
+  // id instead of the thread id; both the in-flight cancel and the pre-binding interrupt memory
+  // must key on the globally unique turn id alone.
+  const turns = new HttpTurnCounter();
+  const aborted: string[] = [];
+  const started = turns.track((signal, bindIdentity) => {
+    bindIdentity({ threadId: "thread_hook_session", turnId: "turn_hook_session" });
+    return new Promise<Response>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        aborted.push("bound");
+        reject(signal.reason);
+      }, { once: true });
+    });
+  });
+  let bind!: () => void;
+  const mayBind = new Promise<void>(resolve => { bind = resolve; });
+  const lateResponse = turns.track(async (signal, bindIdentity) => {
+    await mayBind;
+    bindIdentity({ threadId: "thread_late_binding", turnId: "turn_late_binding" });
+    return new Response(new ReadableStream<Uint8Array>());
+  });
+  await waitForTurnCount(turns, 2);
+
+  expect(await turns.cancelTurn({ threadId: "hook_shared_session_id", turnId: "turn_hook_session" })).toBe(1);
+  expect(aborted).toEqual(["bound"]);
+  await expect(started).rejects.toHaveProperty("name", "AbortError");
+
+  // The pre-binding interrupt memory is keyed by turn id too, so a hook interrupt that races
+  // ahead of the late request still aborts it even though the thread ids disagree.
+  expect(await turns.cancelTurn({ threadId: "hook_shared_session_id", turnId: "turn_late_binding" })).toBe(0);
+  bind();
+  expect((await lateResponse).status).toBe(499);
   await waitForTurnCount(turns, 0);
 });
 
@@ -446,6 +482,90 @@ test("authenticated Interrupt hook endpoint releases the exact routed Web turn",
         "content-type": "application/json",
       },
       body: JSON.stringify({ threadId, turnId }),
+    });
+    expect(interrupted.status).toBe(200);
+    expect(await interrupted.json()).toMatchObject({
+      status: "ok",
+      cancelled_http_turns: 1,
+      cancelled_browser_turns: 1,
+    });
+    expect(adapterAborted).toBeTrue();
+    expect(browserAborted).toBeTrue();
+    await response;
+  } finally {
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+  }
+});
+
+test("Interrupt hook cancels the exact routed Web turn when Codex reports the shared hook session id (PR #22268)", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const threadId = "thread_interrupt_hook_session";
+  const turnId = "turn_interrupt_hook_session";
+  // Codex >=0.155 hook payloads carry the shared hook session id, which never equals the thread id.
+  const hookSessionId = "root_hook_session_shared";
+  let adapterAborted = false;
+  let browserAborted = false;
+  let rejectBrowser!: (error: Error) => void;
+  const browser = new Promise<string>((_resolve, reject) => { rejectBrowser = reject; });
+  chatGptTurnSessions.clear();
+  chatGptTurnSessions.getOrCreate("interrupt-hook-session-browser", () => ({
+    mode: "read-only",
+    browser,
+    physicalSettlement: browser.then(() => undefined, () => undefined),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel: reason => {
+      browserAborted = true;
+      rejectBrowser(reason ?? new Error("native turn interrupted"));
+    },
+  }), "interrupt-hook-session-trace", "interrupt-hook-session-owner", turnId, threadId);
+  const server = startServer(config, {
+    adapterFactory: () => ({
+      name: "interrupt-hook-session-test",
+      runTurn: (_parsed, incoming) => new Promise<void>((_resolve, reject) => {
+        incoming.abortSignal!.addEventListener("abort", () => {
+          adapterAborted = true;
+          reject(incoming.abortSignal!.reason);
+        }, { once: true });
+      }),
+    }),
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const response = fetch(`${endpoint}/v1/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "chatgpt-web/high",
+      stream: true,
+      client_metadata: {
+        "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }),
+      },
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "wait until interrupted" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      }],
+    }),
+  });
+
+  try {
+    const deadline = Date.now() + 1_000;
+    let activeHttpTurns = 0;
+    while (Date.now() < deadline && activeHttpTurns !== 1) {
+      activeHttpTurns = (await (await fetch(`${endpoint}/healthz`)).json() as { active_http_turns: number }).active_http_turns;
+      if (activeHttpTurns !== 1) await Bun.sleep(5);
+    }
+    expect(activeHttpTurns).toBe(1);
+
+    const interrupted = await fetch(`${endpoint}/admin/interrupt-turn`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.controlToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ threadId: hookSessionId, turnId }),
     });
     expect(interrupted.status).toBe(200);
     expect(await interrupted.json()).toMatchObject({
@@ -629,7 +749,7 @@ test("Interrupt retires a logically complete browser turn whose helper is still 
   }
 });
 
-test("Interrupt cancels a detached structured compaction by exact native turn identity", async () => {
+test("Interrupt cancels a detached structured compaction by native turn id when the hook reports the shared session id", async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const threadId = "thread_interrupt_structured";
   const turnId = "turn_interrupt_structured";
@@ -653,13 +773,14 @@ test("Interrupt cancels a detached structured compaction by exact native turn id
 
   try {
     await Bun.sleep(0);
+    // Codex >=0.155 hook payloads report the shared hook session id instead of the thread id.
     const interrupted = await fetch(`http://127.0.0.1:${server.port}/admin/interrupt-turn`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${config.controlToken}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ threadId, turnId }),
+      body: JSON.stringify({ threadId: "hook_shared_session_structured", turnId }),
     });
     expect(await interrupted.json()).toMatchObject({
       status: "ok",

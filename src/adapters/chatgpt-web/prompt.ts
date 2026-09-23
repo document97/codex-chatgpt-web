@@ -351,10 +351,13 @@ function fileUpload(part: CodexFileContent): { name: string; mimeType: string; d
 
 /**
  * Codex desktop has no document variant in its UserInput protocol (only Text/Image/Audio), so an
- * attached file reaches the bridge as plain text: the absolute local path on its own line. ChatGPT
- * cannot read a local path, which previously degraded the attachment to "the workspace does not
- * have it". Resolve those standalone paths into real uploads here. The path text itself stays
- * visible in the context so the model can still reach the file with local tools when needed.
+ * attached file reaches the bridge as plain text in one of two shapes: a bare absolute path on its
+ * own line (CLI/plain input), or Codex desktop's "# Files mentioned by the user" envelope where the
+ * path sits after `## <filename>: ` on a heading line. ChatGPT cannot read a local path, which
+ * previously degraded the attachment to "the workspace does not have it". Resolve both shapes into
+ * real uploads here — the web runtime parses uploaded PDF/DOC/PPTX server-side, which only works
+ * when the bytes actually ride along as an attachment. The path text itself stays visible in the
+ * context so the model can still reach the file with local tools when needed.
  * Non-existent paths (URLs, examples, hypothetical paths) are left untouched.
  */
 const MAX_LOCAL_ATTACHMENT_BYTES = 20_000_000;
@@ -376,6 +379,28 @@ function localPathLine(text: string): string | undefined {
   // Quoted or annotated fragments ("see C:\notes.md for details") are prose, not attachments.
   if (/["<>|?*]/.test(trimmed)) return undefined;
   return trimmed;
+}
+
+/**
+ * One attachment candidate referenced by a message line. Codex desktop never emits a bare path
+ * line: attaching a file produces a "Files mentioned by the user" markdown entry shaped like
+ * `## <filename>: <absolute path>`, whose line fails the bare isAbsolute check above and was
+ * therefore silently dropped — ChatGPT then saw only the path text and answered it could not
+ * access local files. Keep the bare-line rule for CLI/plain input, and additionally accept heading
+ * lines whose suffix after a `: ` separator is itself a bare local path, so the file uploads to
+ * the ChatGPT web runtime (server-side PDF/DOC/PPTX processing) instead of degrading to prose.
+ * Lines without a heading marker (ordinary prose containing colons) stay untouched.
+ */
+function localAttachmentLine(text: string): string | undefined {
+  const bare = localPathLine(text);
+  if (bare) return bare;
+  const trimmed = text.trim();
+  if (!/^#+\s/.test(trimmed)) return undefined;
+  for (let at = trimmed.indexOf(": "); at >= 0; at = trimmed.indexOf(": ", at + 2)) {
+    const suffix = localPathLine(trimmed.slice(at + 2));
+    if (suffix) return suffix;
+  }
+  return undefined;
 }
 
 function localFileAttachment(
@@ -517,7 +542,7 @@ function attachmentPlan(
           const scaffolding = /^(<environment_context>|<turn_aborted>|<recommended_plugins>)/.test(part.text.trimStart());
           if (!scaffolding) {
             part.text.split(/\r?\n/).forEach(line => {
-              const candidate = localPathLine(line);
+              const candidate = localAttachmentLine(line);
               if (!candidate) return;
               const key = localPathKey(messageIndex, candidate);
               if (localFiles.has(key)) return; // same path twice in one message: one upload
@@ -649,7 +674,7 @@ function userTextLocalAttachmentRecords(
   if (!state.allowLocalFileAttachments || state.messageRole !== "user") return [];
   const records: Array<Record<string, unknown>> = [];
   for (const line of text.split(/\r?\n/)) {
-    const candidate = localPathLine(line);
+    const candidate = localAttachmentLine(line);
     if (!candidate) continue;
     const key = localPathKey(state.messageIndex, candidate);
     if (!state.plan.selected.has(key)) continue;

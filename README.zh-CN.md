@@ -20,6 +20,10 @@
   <a href="#get-started">开始使用</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">更新内容</a> · <a href="docs/architecture.md">架构</a> · <a href="TROUBLESHOOTING.md">故障排除</a>
 </p>
 
+> **本项目是 [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web) 的社区复刻（fork）。** Codex Web GPT
+> 在该仓库以 MIT 协议开源的成果上继续开发。感谢原仓库及其中每一位贡献者——本项目的起点来自他们的工作，
+> 本复刻不以原创自居。
+
 在 Codex 原生模型选择器中使用账户可用的 ChatGPT 网页版模型，包括 Pro。使用 ChatGPT 网页版的独立额度，不消耗 Work 或 Codex 额度。保留原有的界面、任务、图片和流式输出。
 
 完整 harness 模式通过 MCP 将 ChatGPT 连接到当前任务的文件、终端、工具和审批流程。对话始终关联到你的 Codex 任务，上下文增长时也能继续工作。

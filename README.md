@@ -1,7 +1,7 @@
 <p align="center">
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.9/codex-web-gpt-5.0.9-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows ? x64"></a>&nbsp;
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.9/codex-web-gpt-5.0.9-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS ? Apple silicon"></a>&nbsp;
-  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.9/codex-web-gpt-5.0.9-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux ? x64"></a>
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.9/codex-web-gpt-5.0.9-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.9/codex-web-gpt-5.0.9-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/document97/codex-chatgpt-web/releases/download/v5.0.9/codex-web-gpt-5.0.9-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ? <a href="README.zh-CN.md">????</a> ? <a href="README.ja.md">???</a> ? <a href="README.ko.md">???</a>
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
 </p>
 
 <p align="center">
@@ -17,31 +17,31 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">Get started</a> ? <a href="https://github.com/document97/codex-chatgpt-web/releases">What?s new</a> ? <a href="docs/architecture.md">Architecture</a> ? <a href="TROUBLESHOOTING.md">Troubleshooting</a>
+  <a href="#get-started">Get started</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
 > **Fork of [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web).** Codex Web GPT continues
-> that MIT-licensed work. Thanks to the upstream repository and to every contributor there ? their work is
+> that MIT-licensed work. Thanks to the upstream repository and to every contributor there — their work is
 > the origin of this project, and this fork does not claim it as its own.
 
-Use the ChatGPT Web models available on your account, including Pro, from Codex?s native model picker?with ChatGPT Web?s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
+Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
 
-Full harness mode connects ChatGPT to the current task?s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
+Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
 
 <div id="get-started"><a id="quick-start"></a></div>
 
 ## Get started
 
-**Available models:** Free/Go ? **Luna / Think**. Accounts with reasoning controls ? **Instant?High**, plus **Extra High** and **Pro** when available. The launcher detects what your account can use.
+**Available models:** Free/Go → **Luna / Think**. Accounts with reasoning controls → **Instant–High**, plus **Extra High** and **Pro** when available. The launcher detects what your account can use.
 
 1. **Install the launcher** using the download for your system above.
 2. **Sign in to ChatGPT** in the embedded browser and run the browser smoke test.
-3. **Install models**, restart Codex once, and choose a **ChatGPT Web ? ?** model.
+3. **Install models**, restart Codex once, and choose a **ChatGPT Web — …** model.
 4. **For coding with tools**, open **MCP** in the launcher and complete the Full harness setup below.
 
 The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
 
-> **Platform note:** Automated CI verifies Windows (x64), Linux (x64), and macOS on Apple Silicon (arm64), and releases publish those three platforms. macOS on Intel (x64) is neither published nor CI-verified ? build from source with bun run app:package.
+> **Platform note:** Automated CI verifies Windows (x64), Linux (x64), and macOS on Apple Silicon (arm64), and releases publish those three platforms. macOS on Intel (x64) is neither published nor CI-verified — build from source with bun run app:package.
 
 <details>
 
@@ -66,7 +66,7 @@ irm https://github.com/document97/codex-chatgpt-web/releases/latest/download/ins
 
 <a id="modes"></a>
 
-Automatic modes offer Luna/Think when the account has no reasoning selector; otherwise Instant?High, with Extra High and Pro available independently when exposed by the account.
+Automatic modes offer Luna/Think when the account has no reasoning selector; otherwise Instant–High, with Extra High and Pro available independently when exposed by the account.
 
 | Mode | Sending messages | Local Codex tools |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ Automatic modes offer Luna/Think when the account has no reasoning selector; oth
 | **Full harness (With Automation)** | Automatic | Yes, through MCP |
 | **Zero Risk** | Paste and send manually | Yes, through a separate MCP connector |
 
-Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. Automatic model entries each select a fixed ChatGPT mode; Codex?s Effort and Speed rows do not override it.
+Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. Automatic model entries each select a fixed ChatGPT mode; Codex’s Effort and Speed rows do not override it.
 
 <a id="full-harness"></a>
 
@@ -92,7 +92,7 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 > See [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309) for the current
 > ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
 > the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, or
-> up to 270,000 tokens with experimental **3? context** enabled, with native Codex compaction
+> up to 270,000 tokens with experimental **3× context** enabled, with native Codex compaction
 > supported throughout.
 
 1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
@@ -114,7 +114,7 @@ that option clicks **Allow once**, never a permanent grant.
 
 <a id="operations"></a>
 
-Use **Activity** for safe local diagnostics and **Settings ? Run doctor** for end-to-end health.
+Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
 Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
 Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
 
@@ -195,5 +195,5 @@ and commands.
 
 ---
 
-[Troubleshooting](TROUBLESHOOTING.md) ? [Security](SECURITY.md) ? [Contributing](CONTRIBUTING.md) ? [MIT license](LICENSE) ? [CI](https://github.com/document97/codex-chatgpt-web/actions/workflows/ci.yml)
+[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/document97/codex-chatgpt-web/actions/workflows/ci.yml)
 

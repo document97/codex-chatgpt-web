@@ -1,9 +1,10 @@
 # Release validation
 
 CI proves that the runtime builds, the launcher starts, and native packages pass their smoke
-contract on macOS, Windows, and Linux. It does not prove an authenticated ChatGPT session, a live
-MCP connector, or a complete Codex turn. A release candidate is not ready until those account-bound
-flows are exercised manually on the platforms below.
+contract on macOS (Apple silicon), Windows x64, and Linux x64. It does not prove an authenticated
+ChatGPT session, a live MCP connector, or a complete Codex turn. A release candidate is not ready
+until those account-bound flows are exercised manually on the platforms below. macOS Intel (x64)
+is neither released nor CI-verified; build it from source.
 
 ## Required evidence
 
@@ -44,13 +45,15 @@ Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account
 Any failed or unexecuted item blocks a stable release. An alpha may ship with a named failed item
 only when the release notes describe the limitation and recovery path explicitly.
 
-### v3.0.0 result
+### Validation records
 
-Maintainer validation passed on Windows 11 x64 on 2026-08-22 using the published v3.0.0-alpha
-upgrade package and a real ChatGPT Pro account. The authenticated launcher, Codex model catalog,
-Full-mode MCP tools, Pro turns, compaction, cancellation, session reuse, and preserved connector
-configuration were exercised successfully. The direct installer completed successfully but gave no
-clear completion action; v3.0.0 changes it to an assisted installer with a final launch option.
+Record each release's account-bound result here or in its release notes. The last full maintainer
+run of this checklist on record is the v3.0.0-alpha validation on Windows 11 x64, 2026-08-22
+(authenticated launcher, Codex model catalog, Full-mode MCP tools, Pro turns, compaction,
+cancellation, session reuse, and preserved connector configuration all exercised with a real
+ChatGPT Pro account). Releases from this fork onward are gated by the three-platform CI run plus
+their merged pull requests; any account-bound flow not exercised manually for a given release
+stays explicitly unverified rather than assumed.
 
 ## macOS gate
 

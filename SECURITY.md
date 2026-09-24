@@ -15,6 +15,5 @@ this project uses only its stdio transport. The lockfile explicitly resolves tha
 adapter to patched 2.0.12. `bun audit`, the MCP protocol test, and the compiled-binary smoke test are
 release gates; remove the override when the stable SDK itself moves to the patched major.
 
-Once the GitHub repository is public, use its private Security Advisory reporting flow. Until that
-is enabled, do not publish a proof of concept that exposes credentials or arbitrary local tool
-execution; contact the maintainer privately through the GitHub account listed by the repository.
+Use the repository's private Security Advisory reporting flow. Do not publish a proof of concept
+that exposes credentials or arbitrary local tool execution; report it privately first.

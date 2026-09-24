@@ -91,9 +91,10 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 >
 > See [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309) for the current
 > ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
-> the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, or
-> up to 270,000 tokens with experimental **3× context** enabled, with native Codex compaction
-> supported throughout.
+> the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, with
+> native Codex compaction supported throughout; experimental **3× context** triples only the
+> advertised transport window (270,000 tokens) while auto-compaction keeps the measured line, so
+> Codex still compacts before the transport guards.
 
 1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
    **Connect harness**.
@@ -139,8 +140,9 @@ codex-chatgpt-web subagents native
   drift fails explicitly instead of silently switching model or transport.
 - Browser state is a sensitive login artifact, and the loopback listener is reachable by processes
   running as the same local user. Never share the launcher profile; use a trusted workstation.
-- Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. Runtime,
-  tests, and packaging are gated on all three in CI; account-bound browser and MCP flows use the
+- Release packages currently target macOS 13+ (Apple silicon), Windows x64, and Linux x64. Runtime,
+  tests, and packaging are gated on all three in CI; macOS Intel (x64) is neither published nor
+  CI-verified, so build it from source. Account-bound browser and MCP flows use the
   separate [release validation](docs/release-validation.md).
 - Builds are not yet platform-signed, so Gatekeeper or SmartScreen may warn. The installers verify
   the published SHA-256 manifest before installation.

@@ -186,9 +186,10 @@ test("the yield line spends only the reserve-free part of the product context li
   const plus = { ...capabilities, proAvailable: false };
   // Plus high compacts at 80,000; the handoff round itself keeps a 10% reserve.
   expect(chatGptWebContextYieldTokenLimit(web, plus, false)).toBe(80_000 - 8_000);
-  // Bigger Context triples only the transport window; the yield line stays on the measured
-  // deliverable envelope so the turn hands off before the browser fails (2026-09-23 incident).
-  expect(chatGptWebContextYieldTokenLimit(web, plus, true)).toBe(80_000 - 8_000);
+  // Bigger Context triples only the transport window; the yield line rises to the measured staged
+  // budget (90,000 minus its 10% reserve) so the turn still hands off before the browser fails
+  // (2026-09-23 incident).
+  expect(chatGptWebContextYieldTokenLimit(web, plus, true)).toBe(90_000 - 9_000);
   expect(chatGptWebContextYieldTokenLimit(web, capabilities, false)).toBe(95_000 - 9_500);
   // Luna carries history through its own checkpoint and Zero Risk has no bridge-driven continuation.
   expect(chatGptWebContextYieldTokenLimit(

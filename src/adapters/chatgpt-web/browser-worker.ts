@@ -2633,6 +2633,35 @@ export class ChatGptBrowserWorker {
     return composer;
   }
 
+  /**
+   * Stop the visible ChatGPT generation after an abort. The previous abort paths pressed the stop
+   * button once and swallowed every failure, so a drifted page (or an open modal) kept streaming
+   * with no trace. Retry until the button is gone and warn when it never stops, so a residual
+   * generation is visible in launcher logs instead of silently absorbing the reuse grace.
+   */
+  private async stopChatGptGeneration(
+    page: Page,
+    reason: string,
+    options: { attempts?: number; intervalMs?: number } = {},
+  ): Promise<void> {
+    const attempts = options.attempts ?? 6;
+    const intervalMs = options.intervalMs ?? 250;
+    const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (!await stop.isVisible().catch(() => false)) return;
+      try {
+        await stop.click({ timeout: 2_000 });
+      } catch {
+        await stop.press("Enter").catch(() => {});
+      }
+      await new Promise(resolveWait => setTimeout(resolveWait, intervalMs));
+    }
+    if (await stop.isVisible().catch(() => false)) {
+      console.warn("[chatgpt-web] ChatGPT stop button stayed visible after abort "
+        + `(${reason}); the page may finish this generation on its own inside the residual grace`);
+    }
+  }
+
   private async waitForTurnDomMutation(page: Page, timeoutMs = 50): Promise<void> {
     await page.evaluate(({ timeout, attributeFilter }) => new Promise<void>(resolveMutation => {
       let settled = false;
@@ -3568,8 +3597,7 @@ export class ChatGptBrowserWorker {
     for (;;) {
       if (page.isClosed()) throw chatGptBrowserTabClosedError();
       if (abortSignal?.aborted) {
-        const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
-        if (await stop.isVisible().catch(() => false)) await stop.press("Enter").catch(() => {});
+        await this.stopChatGptGeneration(page, "multipart stage aborted");
         throw new DOMException("ChatGPT multipart stage aborted", "AbortError");
       }
       if (deadline !== undefined && Date.now() >= deadline) {
@@ -5025,8 +5053,7 @@ export class ChatGptBrowserWorker {
           throw chatGptBrowserTabClosedError();
         }
         if (turn.abortSignal?.aborted) {
-          const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
-          if (await stop.isVisible().catch(() => false)) await stop.press("Enter").catch(() => {});
+          await this.stopChatGptGeneration(page, "turn aborted");
           throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
         if (deadline !== undefined && Date.now() >= deadline) {

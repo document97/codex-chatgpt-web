@@ -212,17 +212,27 @@ describe("fixed ChatGPT Web model routes", () => {
     });
   });
 
-  test("triples only the Sol transport window under Bigger Context; compaction stays on the measured line", () => {
+  test("triples only the Sol transport window under Bigger Context and lifts compaction to the measured staged line", () => {
     // 2026-09-23 incident: a tripled 240k compaction line suppressed Codex auto-compaction and
-    // the bridge yield while the browser already failed at 110-124k. The compaction line and
-    // the derived indicator budget therefore stay on the measured deliverable envelope.
+    // the bridge yield while the browser already failed at 110-124k. The compaction line therefore
+    // sits at the measured staged budget — a fresh conversation accepted a 93,482-token three-part
+    // staging — instead of either the base envelope or the unreachable tripled window.
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "high", {
       ...plus,
       experimentalBiggerContext: true,
     })).toEqual({
       contextWindow: 270_000,
-      effectiveContextWindowPercent: 30,
-      autoCompactTokenLimit: 80_000,
+      effectiveContextWindowPercent: 33,
+      autoCompactTokenLimit: 90_000,
+    });
+    // Instant's measured window is below the staged budget, so the option keeps its base line.
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "low", {
+      ...plus,
+      experimentalBiggerContext: true,
+    })).toEqual({
+      contextWindow: 123_000,
+      effectiveContextWindowPercent: 26,
+      autoCompactTokenLimit: 32_000,
     });
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "max", {
       ...pro,

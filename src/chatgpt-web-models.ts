@@ -185,18 +185,21 @@ export function resolveChatGptWebContextLimits(
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
   if (!capabilities.experimentalBiggerContext) return limits;
-  // Only the transport window triples; the compaction line must stay on the measured
-  // deliverable envelope. One whole-context attachment tops out at 82,000 estimated tokens,
-  // inline multipart staging holds at most three ~40,000-token messages, and ChatGPT stalled
-  // on an accepted 92,872-token turn. Reporting a tripled compaction line here (240,000 for
-  // medium/high) told Codex it still had room at 110-124k tokens, so neither Codex's
-  // auto-compaction nor the bridge's turn yield ever fired and turns died mid-flight against
-  // the transport guards (2026-09-23 incident). Keeping the compaction line honest also keeps
-  // Codex's context indicator honest through the derived effective percent: the indicator then
-  // shows the compactable budget instead of the unreachable tripled window.
+  // Only the transport window triples; the compaction line must stay on the measured deliverable
+  // envelope. The 2026-09-21 measurement accepted a 93,482-token three-part staging in a fresh
+  // conversation, and the cumulative inline boundary sits in (93k, 158k), so
+  // CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT (90,000) is the highest honest line for a staged
+  // transport. A tripled line (240,000 for medium/high) told Codex it still had room at 110-124k
+  // tokens, so neither Codex's auto-compaction nor the bridge's turn yield ever fired and turns
+  // died mid-flight against the transport guards (2026-09-23 incident). Modes whose measured
+  // window is below the staged budget (Instant) keep their base line, and Pro has no staged-
+  // transport measurement of its own, so it keeps its measured base line as well.
+  const stagedAutoCompactTokenLimit = limits.contextWindow >= CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT
+    ? CHATGPT_WEB_INLINE_CONVERSATION_TOKEN_LIMIT
+    : limits.autoCompactTokenLimit;
   return contextLimits(
     limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
-    limits.autoCompactTokenLimit,
+    Math.max(limits.autoCompactTokenLimit, stagedAutoCompactTokenLimit),
   );
 }
 

@@ -2607,8 +2607,20 @@ export class ChatGptBrowserWorker {
     let composer: Locator;
     try {
       composer = await this.activeComposer(page);
-    } catch {
-      throw new Error("ChatGPT web login is expired or the Temporary Chat surface is unavailable");
+    } catch (cause) {
+      // A signed-out session redirects to the auth flow instead of the composer; any
+      // other missing composer is a Temporary Chat hydration failure. Keep the original
+      // probe failure as the cause so diagnostics retain the composer count.
+      const url = page.url();
+      const signedOut = url.includes("/auth/login")
+        || url.includes("auth.openai.com")
+        || url.includes("auth0.openai.com");
+      throw new Error(
+        signedOut
+          ? "ChatGPT web login is expired; sign in to ChatGPT again from the launcher"
+          : `ChatGPT Temporary Chat surface is unavailable (${url})`,
+        { cause },
+      );
     }
     if (await dismissChatGptTemporaryChatOnboarding(page)) {
       await captureDiagnostic?.("temporary-chat-onboarding-dismissed");

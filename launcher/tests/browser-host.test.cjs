@@ -23,6 +23,7 @@ const {
   MANUAL_SUBMIT_TIMEOUT_MS,
   navigationErrorForLog,
   navigationOriginForLog,
+  waitForManualOperationIdle,
 } = require("../electron/browser-host.cjs");
 
 test("manual prompt handoff keeps ordinary turns at thirty seconds and compaction at two minutes", () => {
@@ -968,6 +969,36 @@ test("explicit login waits for an in-flight saved-session refresh before taking 
   finishRefresh();
   await login;
   assert.deepEqual(calls, ["ChatGPT login", "probe", "inspect"]);
+});
+
+test("queued manual operations wait for the active operation instead of failing busy", async () => {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(),
+    manualOperation: "browser smoke test",
+    initializationReady: Promise.resolve(),
+    activateHomeSurface() {},
+    setState() {},
+    view: null,
+  });
+  const order = [];
+  const queued = fixture.withManualOperation("ChatGPT login", async () => {
+    order.push("started");
+    assert.equal(fixture.manualOperation, "ChatGPT login");
+  });
+  setTimeout(() => {
+    order.push("released");
+    fixture.manualOperation = null;
+  }, 30);
+  await queued;
+  assert.deepEqual(order, ["released", "started"]);
+  assert.equal(fixture.manualOperation, null);
+});
+
+test("a manual operation that never releases the browser fails naming the blocker", async () => {
+  await assert.rejects(
+    waitForManualOperationIdle({ manualOperation: "browser smoke test" }, 50),
+    /already busy with browser smoke test/,
+  );
 });
 
 test("passkey login imports only validated state and re-proves the Launcher session", async () => {

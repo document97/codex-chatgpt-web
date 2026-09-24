@@ -68,9 +68,29 @@ window does not automatically transfer that session.
 - Passkey-only macOS accounts have a known unresolved limitation. If no alternate method exists, do
   not repeatedly delete the browser profile; there is no safe generic workaround to claim yet.
 
+`ChatGPT web login is expired` is reported only when the owned browser actually landed on the auth
+flow; a slow or half-loaded Temporary Chat surface reports a separate surface-unavailable message
+with the observed URL instead. Launcher actions that collide with an in-flight sign-in, smoke test,
+or inspection queue behind that operation (up to five minutes) rather than failing with a busy
+error.
+
 If an ordinary login still fails, export a safe log immediately after one attempt. Include the OS,
 launcher version, account tier, sign-in provider, and whether the Temporary Chat composer ever
 appeared. Never upload cookies, browser storage, authentication headers, or raw profile files.
+
+## Codex **Stop** does not stop the web page
+
+The bridge presses ChatGPT's stop button when a turn is aborted, but Codex can decide not to
+dispatch its interrupt at all when Stop races turn completion. The bridge then never learns about
+the cancel and the page finishes its generation on its own. Read the safe log:
+
+- a `stop button stayed visible` warning names a page that kept streaming after the abort;
+- an `interrupt-turn` line reports the three cancellation paths the bridge tried;
+- `interrupt-turn matched no active turn` while turns are active means the identity contract broke
+  again, and no line at all means Codex never dispatched the hook.
+
+Daemon output is recorded as launcher runtime activity, so all of these appear in **Activity** and
+in the privacy-safe export.
 
 ## The browser smoke test fails
 
@@ -185,8 +205,13 @@ task is expected. Start a new Codex task when the new request must not carry ear
 
 Open an issue if the launcher reports that ChatGPT did not accept all attachments, or if images from
 a different Codex task appear. Include a fresh safe log with the failing trace and attachment stage.
-Do not replace inline images with arbitrary local paths: browser-only and compaction turns
-intentionally do not receive unrestricted filesystem access.
+The bridge never grants ChatGPT filesystem access; it only uploads the files a message actually
+references. A bare absolute path line and Codex desktop's `Files mentioned by the user` envelope are
+both resolved into real uploads when the file exists and its type is supported (10 files per turn,
+20MB per file, 50MB per turn); unsupported or unreadable files add an explicit skip notice to the
+prompt instead of failing silently. If a turn reports that ChatGPT saw only the path text, reattach
+the file; experimental Bigger Context staging intentionally skips path mining, so use an inline
+attachment for those turns.
 
 ## Image generation stops before an image appears
 

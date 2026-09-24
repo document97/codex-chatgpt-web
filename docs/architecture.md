@@ -95,19 +95,29 @@ Browser submission and response binding use ChatGPT's logical `data-turn-id`, no
 `conversation-turn-N` display index, which can change during rendering. The submission baseline
 includes the persistent `data-turn-id-container` wrappers of virtualized history. Remounting old
 messages therefore cannot count as a new submission or another user's turn. Missing or duplicate
-logical identities fail explicitly; accepted messages are never resent to repair their DOM.
+logical identities fail explicitly; accepted messages are never resent to repair their DOM. An
+aborted turn presses the visible ChatGPT stop button until it disappears; a page that keeps
+streaming anyway is reported in the launcher log instead of being silently absorbed.
 
 Sign-in uses that same persistent Electron partition. ChatGPT login pages and allowed identity-
 provider popups are adopted into a temporary `WebContentsView` inside the launcher instead of being
 redirected to another browser. After the provider returns to ChatGPT, the launcher requires both a
 server-authenticated session and the Temporary Chat composer in the primary owned view, then closes
 the temporary auth view. There is no browser-profile handoff, cookie import, CDP login port, or
-temporary session-transfer directory.
+temporary session-transfer directory. Launcher-owned manual browser operations — sign-in, passkey
+sign-in, smoke test, session inspection, connector verification — share one mutex: a colliding
+request queues behind the active operation for up to five minutes instead of failing on contact,
+and a bound wait still fails closed naming the operation that never released the browser.
 
 The current compiled Codex task context is inserted as one inline JSON envelope. Image bytes stay
-out of the JSON and are attached natively with stable references. The runtime does not create a
-context JSONL file, upload a synthetic context document, include prompt hashes, or silently truncate
-the envelope. Attachment acceptance and send readiness are verified before the turn begins.
+out of the JSON and are attached natively with stable references. Local file references are resolved
+into real uploads too: a bare absolute path line (CLI input) and Codex desktop's
+`# Files mentioned by the user:` envelope both become file attachments under the shared
+attachment quota (10 per turn, 20MB per file, 50MB per turn), and an invisible retention-hint
+comment names which received attachments a later fresh page should re-upload. The runtime does not
+create a context JSONL file, upload a synthetic context document, include prompt hashes, or
+silently truncate the envelope. Attachment acceptance and send readiness are verified before the
+turn begins.
 
 Initial Launcher setup asks which interaction mode to install and defaults to With Automation. The
 same choice remains available in Settings; changing it uses the transactional setup path, replaces
@@ -125,9 +135,16 @@ per-tab nonce used to validate the Launcher confirmation never leaves the local 
 
 The appended models advertise the authenticated account's context window and a ten-percent
 auto-compaction reserve. Usage is counted with the GPT-5 tokenizer plus fixed platform/image
-reserves, rather than inferred from character length. The ChatGPT composer also has an independent
-inline-size boundary: usage accounting asks Codex to compact before that boundary, and a prompt
-that still exceeds the proven hard ceiling fails explicitly before any browser turn opens.
+reserves and the estimated cost of user file uploads — recognized text is tokenized, media uses the
+flat media reserve, and binary documents fall back to a byte-based estimate capped at the
+single-attachment ceiling — rather than inferred from character length. The ChatGPT composer also
+has an independent inline-size boundary: usage accounting asks Codex to compact before that
+boundary, and a prompt that still exceeds the proven hard ceiling fails explicitly before any
+browser turn opens. Bigger Context triples only the advertised transport window;
+auto-compaction and the derived context indicator sit on the measured staged budget — a fresh
+conversation accepted a 93,482-token three-part staging — so Codex compacts before the transport
+guards instead of trusting an unreachable tripled budget. Modes whose measured window is below that
+budget, and Pro without a staged-transport measurement, keep their base line.
 Top-level `model_context_window` raises only the proxied native rows' advertised maximum, allowing
 Codex to apply its own configured context override without clamping. Routed ChatGPT Web models
 retain their measured adapter-owned limits.

@@ -89,8 +89,9 @@ Zero Risk 不读取或操作 ChatGPT 页面。请自行选择模型和 `Codex Ze
 >
 > 有关 **GPT-5.6 Sol Pro** 和 **GPT-6 Astra** 当前的 ChatGPT 消息额度，请参阅
 > [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309)。Token 上下文上限取决于
-> 账户类型和所选 effort。Plus 的 Medium/High 使用实测的 90,000-token 窗口；启用实验性的
-> **3× context** 后最高为 270,000 tokens，并且全程支持原生 Codex compaction。
+> 账户类型和所选 effort。Plus 的 Medium/High 使用实测的 90,000-token 窗口，全程支持原生
+> Codex compaction；启用实验性的 **3× context** 只会把对外公布的传输窗口提高到 270,000
+> tokens，自动压缩以实测的分段预算（90,000 tokens）为准，Codex 因此会在传输上限之前先压缩。
 
 1. 完成启动器中的必需设置。
 2. 在启动器中打开 **MCP**。请在将使用 ChatGPT 连接器的同一个 OpenAI 账户中创建 Tunnel
@@ -138,8 +139,9 @@ codex-chatgpt-web subagents native
   失败，而不是静默切换模型或传输方式。
 - 浏览器状态是敏感的登录凭据，loopback 监听器也可被同一本地用户运行的进程访问。切勿共享
   启动器 profile，并仅在可信工作站上使用。
-- 发布包目前支持 macOS 13+（arm64/x64）、Windows x64 和 Linux x64。运行时、测试和打包会在
-  CI 中对三种系统进行检查；依赖账户的浏览器与 MCP 流程使用单独的
+- 发布包目前支持 macOS 13+（Apple silicon）、Windows x64 和 Linux x64。运行时、测试和打包会在
+  CI 中对三者进行检查；macOS Intel（x64）既不发布也不在 CI 覆盖范围内，需要自行从源码构建。
+  依赖账户的浏览器与 MCP 流程使用单独的
   [发布验证](docs/release-validation.md)。
 - 构建目前尚未进行平台签名，因此 Gatekeeper 或 SmartScreen 可能会显示警告。安装程序会在安装前
   验证已发布的 SHA-256 清单。

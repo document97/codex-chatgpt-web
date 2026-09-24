@@ -46,6 +46,9 @@ const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
 const RETAINED_TURN_TAB_TTL_MS = 30 * 60 * 1000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
+// Explicit login, smoke, and inspection requests queue behind an active manual operation
+// instead of failing immediately with an "already busy" error.
+const MANUAL_OPERATION_WAIT_TIMEOUT_MS = 300_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
 const CHATGPT_BACKEND_REQUEST_FILTER = { urls: [`${CHATGPT_ORIGIN}/backend-api/*`] };
 const ZOOM_FACTORS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
@@ -298,6 +301,21 @@ function loadCommittedBrowserSurface(
       finish(error instanceof Error ? error : new Error(String(error)));
     }
   });
+}
+
+// Queue one manual operation behind the one already owning the browser instead of
+// failing a colliding request that would succeed seconds later.
+async function waitForManualOperationIdle(host, timeoutMs = MANUAL_OPERATION_WAIT_TIMEOUT_MS) {
+  const startedAt = Date.now();
+  while (host.manualOperation) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(
+        `ChatGPT browser is already busy with ${host.manualOperation}`
+        + ` (waited ${Math.round((Date.now() - startedAt) / 1_000)}s)`,
+      );
+    }
+    await new Promise(resolveWait => setTimeout(resolveWait, 100));
+  }
 }
 
 class BrowserHost {
@@ -2904,6 +2922,9 @@ class BrowserHost {
     if (this.activeTraceId) {
       throw new Error(`ChatGPT browser is running Codex turn ${this.activeTraceId}`);
     }
+    // Queue behind the active manual operation (login, smoke test, inspection, ...)
+    // instead of rejecting a colliding request that would succeed seconds later.
+    await waitForManualOperationIdle(this);
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is already busy with ${this.manualOperation}`);
     }
@@ -3015,4 +3036,5 @@ module.exports = {
   navigationErrorForLog,
   navigationOriginForLog,
   TEMPORARY_CHAT_URL,
+  waitForManualOperationIdle,
 };

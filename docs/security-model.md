@@ -49,7 +49,9 @@ prevents a cached legacy schema from being mistaken for the current capability c
 
 ### Prompt injection and destructive tool use
 
-ChatGPT sees repository content and tool results that may contain hostile instructions. Full mode
+ChatGPT sees repository content and tool results that may contain hostile instructions. Local files
+selected as attachments are untrusted input of the same kind: they are uploaded into the ChatGPT
+conversation with their extracted content. Full mode
 can invoke write and command tools. Use a trusted workspace, keep Codex sandbox/approval settings
 appropriate, and grant only intended connector actions. Automatic per-call approval is off by
 default.
@@ -105,7 +107,9 @@ sequential messages in the same model/effort/compaction epoch; chats are never r
 Closing a running tab destroys its page and terminates that turn. The five-tab limit bounds parallel
 account traffic. Tool calls remain in the same ChatGPT response. The
 bounded local continuation cache is private, expires, and exists only to implement Codex
-`previous_response_id` replay. Full-mode context compaction accepts a checkpoint only through its
+`previous_response_id` replay, and per-conversation coordination state lives in an append-only
+`conversations.jsonl` under the application home that is rebuilt if corrupted and never exposed to
+the model. Full-mode context compaction accepts a checkpoint only through its
 one-shot MCP control capability in the exact retained source chat. If that chat no longer exists, a
 fresh tool-free Temporary Chat receives the canonical Codex history; the bridge never parses ordinary
 assistant prose as a structured handoff.

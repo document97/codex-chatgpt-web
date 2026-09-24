@@ -88,7 +88,8 @@ the measured transport limit.
 Both launcher profiles expose **Bigger Context (experimental)** in Settings. It is disabled by
 default. The switch updates the profile's canonical runtime configuration through the normal setup
 transaction; it is not a launcher-only preference. Production setup also rewrites the managed
-Codex model catalog with 3x context and auto-compaction thresholds and asks you to restart Codex.
+Codex model catalog with a tripled transport context window while auto-compaction stays on the
+measured staged budget (90,000 tokens for Plus Medium/High), and asks you to restart Codex.
 The DEV CLI reads the same setting from its isolated runtime configuration on each command.
 
 When enabled, a normal turn stays on the original single-message path while its estimated input
@@ -118,9 +119,10 @@ has no retained MCP boundary and keeps the three-message compaction path so its 
 the complete expanded history.
 
 Any missing or malformed acknowledgement fails the whole transaction. No later part or final
-commit is sent, and a retry starts again from part one in a fresh Temporary Chat. The model context
-and auto-compaction ceilings are reported as 3× while the switch is active, but every individual
-stage must still fit the selected ChatGPT mode's measured one-message boundary.
+commit is sent, and a retry starts again from part one in a fresh Temporary Chat. While the switch
+is active only the advertised transport context window is tripled; auto-compaction follows the
+measured staged budget so Codex compacts before the transport guards, and every individual stage
+must still fit the selected ChatGPT mode's measured one-message boundary.
 
 Small turns add no requests. Two-part turns add two staging requests and acknowledgements; three-part
 turns add three. Browser-only compaction also uses three stages. Large turns are therefore slower and may increase the probability of

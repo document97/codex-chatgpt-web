@@ -90,8 +90,10 @@ ChatGPT のツール呼び出しを現在の Codex タスクへ接続します�
 > **GPT-5.6 Sol Pro** と **GPT-6 Astra** の現在の ChatGPT メッセージ上限については、
 > [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309) を参照してください。
 > Token コンテキスト上限は、アカウント種別と選択した effort によって異なります。Plus の
-> Medium/High は実測 90,000-token ウィンドウを使用し、実験的な **3× context** を有効にすると
-> 最大 270,000 tokens まで拡張されます。いずれの場合もネイティブ Codex compaction に対応します。
+> Medium/High は実測 90,000-token ウィンドウを使用し、ネイティブ Codex compaction に対応します。
+> 実験的な **3× context** が拡張するのは公開される転送ウィンドウのみ（最大 270,000 tokens）で、
+> auto-compaction は実測のステージング予算（90,000 tokens）に従うため、Codex は転送ガードより前に
+> compaction します。
 
 1. ランチャーの必須セットアップを完了します。
 2. ランチャーで **MCP** を開きます。ChatGPT コネクタを使用するものと同じ OpenAI アカウントで
@@ -142,8 +144,9 @@ codex-chatgpt-web subagents native
   差異が発生した場合、モデルや転送方式を黙って切り替えず、明示的に失敗します。
 - ブラウザー状態は機密性の高いログイン情報です。また、loopback リスナーには同じローカルユーザーで動作する
   プロセスからアクセスできます。ランチャープロファイルを共有せず、信頼できるワークステーションを使用してください。
-- リリースパッケージは現在、macOS 13+（arm64/x64）、Windows x64、Linux x64 を対象としています。
+- リリースパッケージは現在、macOS 13+（Apple silicon）、Windows x64、Linux x64 を対象としています。
   ランタイム、テスト、パッケージングは CI で 3 プラットフォームすべてに対して検証されます。
+  macOS Intel（x64）は配布も CI 検証も行われないため、ソースからビルドしてください。
   アカウント依存のブラウザー／MCP フローには、個別の[リリース検証](docs/release-validation.md)を使用します。
 - ビルドはまだプラットフォーム署名されていないため、Gatekeeper または SmartScreen が警告を表示する場合があります。
   インストーラーは、インストール前に公開 SHA-256 マニフェストを検証します。

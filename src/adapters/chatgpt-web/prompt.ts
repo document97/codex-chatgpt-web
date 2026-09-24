@@ -30,7 +30,7 @@ export interface ChatGptWebPromptFile {
   mimeType: string;
   /** Inline base64 or data URL; decoded only in the browser helper. */
   data: string;
-  /** Estimated model input represented by generated textual files. */
+  /** Estimated model input represented by generated textual files; uploads omit it and are estimated from their bytes when usage is compiled. */
   estimatedTokens?: number;
 }
 

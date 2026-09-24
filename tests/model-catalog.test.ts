@@ -93,8 +93,10 @@ describe("native /models augmentation", () => {
     config.experimentalBiggerContext = true;
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
     const pro = models.find(model => model.slug === "chatgpt-web/pro")!;
+    // The advertised transport window triples, but the compaction line Codex compacts at stays
+    // on the measured deliverable envelope (2026-09-23 incident).
     expect(pro.context_window).toBe(336_579);
-    expect(pro.auto_compact_token_limit).toBe(285_000);
+    expect(pro.auto_compact_token_limit).toBe(95_000);
   });
 
   test("keeps native Sol selectable in the bounded Compatibility V1 registry", () => {

@@ -2154,33 +2154,6 @@ function WelcomeOption({
   );
 }
 
-function WelcomeAction({
-  complete,
-  disabled,
-  icon,
-  label,
-  onClick,
-}: {
-  complete: boolean;
-  disabled?: boolean;
-  icon: "github" | "x";
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      className={`welcome-option is-social${complete ? " is-complete" : ""}`}
-      disabled={disabled}
-      onClick={onClick}
-      type="button"
-    >
-      <span><Icon name={icon} /></span>
-      <strong>{label}</strong>
-      <Icon name={complete ? "check" : "external"} />
-    </button>
-  );
-}
-
 function PrimaryButton({
   children,
   disabled = false,

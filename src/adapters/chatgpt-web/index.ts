@@ -427,7 +427,7 @@ function resumeNudgeRequest(parsed: CodexParsedRequest): CodexParsedRequest {
  * tool round needs. The bridge cannot shrink that history — Codex owns it — so the only available
  * action is to stop extending the turn and ask for a resumable handoff instead.
  */
-function contextBudgetExhausted(
+export function contextBudgetExhausted(
   usageInput: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
   experimentalBiggerContext: boolean | undefined,

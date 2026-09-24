@@ -20,6 +20,10 @@
   <a href="#get-started">시작하기</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">업데이트</a> · <a href="docs/architecture.md">아키텍처</a> · <a href="TROUBLESHOOTING.md">문제 해결</a>
 </p>
 
+> **이 프로젝트는 [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web)의 커뮤니티 포크입니다.** Codex Web GPT는
+> 해당 저장소가 MIT 라이선스로 공개한 성과 위에서 개발을 이어갑니다. 원본 저장소와 모든 기여자분들께 감사드립니다——
+> 이 프로젝트의 출발점은 그들의 작업이며, 이 포크는 그것을 자신의 것으로 주장하지 않습니다.
+
 Codex의 네이티브 모델 선택기에서 Pro를 포함해 계정에 제공되는 ChatGPT Web 모델을 사용하세요. ChatGPT Web의 별도 사용 한도를 사용하므로 Work나 Codex의 사용량은 차감되지 않습니다. 기존 인터페이스, 작업, 이미지, 스트리밍은 그대로 유지됩니다.
 
 Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미널, 도구 및 승인 절차에 연결합니다. 대화는 Codex 작업에 계속 연결되어 있으므로 컨텍스트가 늘어나도 작업을 이어갈 수 있습니다.

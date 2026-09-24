@@ -9,8 +9,6 @@ const DEFAULT_STATE = Object.freeze({
   version: 1,
   language: null,
   onboardingComplete: false,
-  githubOpened: false,
-  xOpened: false,
   autoStart: true,
   keepRunningOnClose: true,
   showBrowserDuringTurns: true,
@@ -36,13 +34,14 @@ function readState(filePath) {
     if (!parsed || parsed.version !== 1) return { ...DEFAULT_STATE };
     const state = { ...DEFAULT_STATE, ...parsed };
     delete state.bridgeEnabled;
+    // Social-visit bookkeeping went away with the author links; drop it from old launcher files.
+    delete state.githubOpened;
+    delete state.xOpened;
     if (state.language !== null && (typeof state.language !== "string" || !Object.hasOwn(languages, state.language))) {
       state.language = DEFAULT_STATE.language;
     }
     for (const key of [
       "onboardingComplete",
-      "githubOpened",
-      "xOpened",
       "autoStart",
       "keepRunningOnClose",
       "showBrowserDuringTurns",

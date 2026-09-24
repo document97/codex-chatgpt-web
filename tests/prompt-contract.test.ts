@@ -1,4 +1,5 @@
-import { explicitCompletionRecoveryPrompt } from "../src/adapters/chatgpt-web/index";
+import { contextBudgetExhausted, explicitCompletionRecoveryPrompt } from "../src/adapters/chatgpt-web/index";
+import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,7 @@ import {
 } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { SUMMARY_PREFIX } from "../src/responses/compaction";
-import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
+import { biggerContextPartCount, chatGptWebContextYieldTokenLimit, estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import type { CodexParsedRequest } from "../src/types";
 
 function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexParsedRequest {
@@ -1359,4 +1360,52 @@ test("local file: Codex desktop 'Files mentioned by the user' envelope uploads t
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("local path file attachments are counted in the compiled usage estimate", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cgw-local-usage-"));
+  const filePath = join(dir, "scanned-spec.pdf");
+  // Binary bytes: 400,000 / 4 = 100,000 estimated tokens, held at the 82,000 ceiling.
+  writeFileSync(filePath, Buffer.alloc(400_000, 0xFF));
+  try {
+    const caps = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+    const token = "turn_12345678901234567890123456789012";
+    const parsed = request("high");
+    const baseline = estimateCompiledChatGptWebInputTokens(
+      compileChatGptWebPrompt(parsed, caps, token), parsed.modelId,
+    );
+    const wirePath = filePath.replaceAll("\\", "/");
+    parsed.context.messages[1]!.content = [
+      "# Files mentioned by the user:",
+      "",
+      `## scanned-spec.pdf: ${wirePath}`,
+      "",
+      "## My request:",
+      "summarize the spec",
+      "",
+    ].join("\n");
+    const estimate = estimateCompiledChatGptWebInputTokens(
+      compileChatGptWebPrompt(parsed, caps, token), parsed.modelId,
+    );
+    const growth = estimate - baseline;
+    expect(growth).toBeGreaterThanOrEqual(82_000);
+    // Only the envelope scaffolding and file_attachment record ride above the cap.
+    expect(growth).toBeLessThan(84_000);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("one more pending tool-result batch crosses the context yield line", () => {
+  const caps = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: false };
+  const parsed = request("high");
+  const yieldAt = chatGptWebContextYieldTokenLimit(parsed, caps, false);
+  expect(yieldAt).toBeDefined();
+  const baseInput = estimateChatGptWebUsage(parsed, {}, caps, false).inputTokens;
+  expect(baseInput).toBeLessThan(yieldAt!);
+  // Room for at least one more tool round: the bridge keeps driving the browser turn.
+  expect(contextBudgetExhausted(parsed, caps, false, yieldAt! - baseInput - 1)).toBe(false);
+  // Reaching the line closes the turn with a handoff summary instead of a transport overflow.
+  expect(contextBudgetExhausted(parsed, caps, false, yieldAt! - baseInput)).toBe(true);
+  expect(contextBudgetExhausted(parsed, caps, false, 0)).toBe(false);
 });

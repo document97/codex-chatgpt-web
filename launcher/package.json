@@ -3,7 +3,7 @@
   "version": "5.0.8",
   "private": true,
   "description": "Desktop control center for Codex ChatGPT Web",
-  "author": "miuuyy",
+  "author": "Codex Web GPT",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {

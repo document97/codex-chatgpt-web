@@ -185,9 +185,18 @@ export function resolveChatGptWebContextLimits(
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
   if (!capabilities.experimentalBiggerContext) return limits;
+  // Only the transport window triples; the compaction line must stay on the measured
+  // deliverable envelope. One whole-context attachment tops out at 82,000 estimated tokens,
+  // inline multipart staging holds at most three ~40,000-token messages, and ChatGPT stalled
+  // on an accepted 92,872-token turn. Reporting a tripled compaction line here (240,000 for
+  // medium/high) told Codex it still had room at 110-124k tokens, so neither Codex's
+  // auto-compaction nor the bridge's turn yield ever fired and turns died mid-flight against
+  // the transport guards (2026-09-23 incident). Keeping the compaction line honest also keeps
+  // Codex's context indicator honest through the derived effective percent: the indicator then
+  // shows the compactable budget instead of the unreachable tripled window.
   return contextLimits(
     limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
-    limits.autoCompactTokenLimit * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
+    limits.autoCompactTokenLimit,
   );
 }
 

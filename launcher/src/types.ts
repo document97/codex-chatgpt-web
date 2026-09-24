@@ -9,8 +9,6 @@ export interface LauncherState {
   version: 1;
   language: Language | null;
   onboardingComplete: boolean;
-  githubOpened: boolean;
-  xOpened: boolean;
   autoStart: boolean;
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
@@ -107,8 +105,6 @@ export interface LauncherSnapshot {
   mcpCredentialsConfigured: boolean;
   logs: LogRecord[];
   urls: {
-    github: string;
-    x: string;
     connectors: string;
     tunnels: string;
     keys: string;
@@ -124,7 +120,6 @@ export interface LauncherSnapshot {
 export interface LauncherApi {
   snapshot(): Promise<LauncherSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
-  openSocial(target: "github" | "x"): Promise<LauncherState>;
   completeOnboarding(language: Language, browserInteractionMode: BrowserInteractionMode): Promise<LauncherState>;
   openExternal(url: string): Promise<boolean>;
   setBrowserBounds(bounds: { x: number; y: number; width: number; height: number }): Promise<boolean>;

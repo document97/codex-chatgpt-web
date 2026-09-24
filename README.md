@@ -20,6 +20,10 @@
   <a href="#get-started">Get started</a> · <a href="https://github.com/document97/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
 </p>
 
+> **Fork of [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web).** Codex Web GPT continues
+> that MIT-licensed work. Thanks to the upstream repository and to every contributor there — their work is
+> the origin of this project, and this fork does not claim it as its own.
+
 Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
 
 Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.

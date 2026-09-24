@@ -92,7 +92,8 @@ ChatGPT のツール呼び出しを現在の Codex タスクへ接続します�
 > Token コンテキスト上限は、アカウント種別と選択した effort によって異なります。Plus の
 > Medium/High は実測 90,000-token ウィンドウを使用し、ネイティブ Codex compaction に対応します。
 > 実験的な **3× context** が拡張するのは公開される転送ウィンドウのみ（最大 270,000 tokens）で、
-> auto-compaction は実測値のまま維持されるため、Codex は転送ガードより前に compaction します。
+> auto-compaction は実測のステージング予算（90,000 tokens）に従うため、Codex は転送ガードより前に
+> compaction します。
 
 1. ランチャーの必須セットアップを完了します。
 2. ランチャーで **MCP** を開きます。ChatGPT コネクタを使用するものと同じ OpenAI アカウントで

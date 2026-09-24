@@ -91,7 +91,7 @@ Zero Risk 不读取或操作 ChatGPT 页面。请自行选择模型和 `Codex Ze
 > [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309)。Token 上下文上限取决于
 > 账户类型和所选 effort。Plus 的 Medium/High 使用实测的 90,000-token 窗口，全程支持原生
 > Codex compaction；启用实验性的 **3× context** 只会把对外公布的传输窗口提高到 270,000
-> tokens，自动压缩仍以实测线为准，Codex 因此会在传输上限之前先压缩。
+> tokens，自动压缩以实测的分段预算（90,000 tokens）为准，Codex 因此会在传输上限之前先压缩。
 
 1. 完成启动器中的必需设置。
 2. 在启动器中打开 **MCP**。请在将使用 ChatGPT 连接器的同一个 OpenAI 账户中创建 Tunnel

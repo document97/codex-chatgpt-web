@@ -95,8 +95,8 @@ inbound 포트를 열거나 라우터 포트 포워딩을 설정할 필요가 �
 > [Limits](https://github.com/document97/codex-chatgpt-web/discussions/309)를 참고하세요.
 > 컨텍스트 한도는 계정 유형과 선택한 effort에 따라 달라집니다. Plus의 Medium/High는 실측
 > 90,000-token 창을 사용하며 네이티브 Codex compaction을 지원합니다. 실험적 3× context는
-> 공개되는 전송 창만 최대 270,000 tokens까지 확장하고 auto-compaction은 실측 기준선을
-> 유지하므로, Codex는 항상 전송 가드보다 먼저 compaction합니다.
+> 공개되는 전송 창만 최대 270,000 tokens까지 확장하고 auto-compaction은 실측된 스테이징
+> 예산(90,000 tokens)을 따르므로, Codex는 항상 전송 가드보다 먼저 compaction합니다.
 
 1. 필수 설정을 완료하고 **MCP**를 연 다음 Tunnel과 일반 API 키를 생성하고
    **하네스 연결**을 누릅니다.

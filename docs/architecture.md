@@ -95,7 +95,9 @@ Browser submission and response binding use ChatGPT's logical `data-turn-id`, no
 `conversation-turn-N` display index, which can change during rendering. The submission baseline
 includes the persistent `data-turn-id-container` wrappers of virtualized history. Remounting old
 messages therefore cannot count as a new submission or another user's turn. Missing or duplicate
-logical identities fail explicitly; accepted messages are never resent to repair their DOM.
+logical identities fail explicitly; accepted messages are never resent to repair their DOM. An
+aborted turn presses the visible ChatGPT stop button until it disappears; a page that keeps
+streaming anyway is reported in the launcher log instead of being silently absorbed.
 
 Sign-in uses that same persistent Electron partition. ChatGPT login pages and allowed identity-
 provider popups are adopted into a temporary `WebContentsView` inside the launcher instead of being
@@ -139,8 +141,10 @@ single-attachment ceiling — rather than inferred from character length. The Ch
 has an independent inline-size boundary: usage accounting asks Codex to compact before that
 boundary, and a prompt that still exceeds the proven hard ceiling fails explicitly before any
 browser turn opens. Bigger Context triples only the advertised transport window;
-auto-compaction thresholds and the derived context indicator stay on the measured envelope, so
-Codex compacts before the transport guards instead of trusting an unreachable tripled budget.
+auto-compaction and the derived context indicator sit on the measured staged budget — a fresh
+conversation accepted a 93,482-token three-part staging — so Codex compacts before the transport
+guards instead of trusting an unreachable tripled budget. Modes whose measured window is below that
+budget, and Pro without a staged-transport measurement, keep their base line.
 Top-level `model_context_window` raises only the proxied native rows' advertised maximum, allowing
 Codex to apply its own configured context override without clamping. Routed ChatGPT Web models
 retain their measured adapter-owned limits.

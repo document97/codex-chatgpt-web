@@ -93,8 +93,8 @@ The launcher's **MCP** page guides the complete setup. For the exact clicks, see
 > ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
 > the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, with
 > native Codex compaction supported throughout; experimental **3× context** triples only the
-> advertised transport window (270,000 tokens) while auto-compaction keeps the measured line, so
-> Codex still compacts before the transport guards.
+> advertised transport window (270,000 tokens) while auto-compaction stays on the measured staged
+> budget (90,000 tokens), so Codex still compacts before the transport guards.
 
 1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
    **Connect harness**.

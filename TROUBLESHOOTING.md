@@ -78,6 +78,20 @@ If an ordinary login still fails, export a safe log immediately after one attemp
 launcher version, account tier, sign-in provider, and whether the Temporary Chat composer ever
 appeared. Never upload cookies, browser storage, authentication headers, or raw profile files.
 
+## Codex **Stop** does not stop the web page
+
+The bridge presses ChatGPT's stop button when a turn is aborted, but Codex can decide not to
+dispatch its interrupt at all when Stop races turn completion. The bridge then never learns about
+the cancel and the page finishes its generation on its own. Read the safe log:
+
+- a `stop button stayed visible` warning names a page that kept streaming after the abort;
+- an `interrupt-turn` line reports the three cancellation paths the bridge tried;
+- `interrupt-turn matched no active turn` while turns are active means the identity contract broke
+  again, and no line at all means Codex never dispatched the hook.
+
+Daemon output is recorded as launcher runtime activity, so all of these appear in **Activity** and
+in the privacy-safe export.
+
 ## The browser smoke test fails
 
 The smoke test and real turns use the same current ChatGPT controls. Errors mentioning the effort

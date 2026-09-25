@@ -11,8 +11,10 @@ import {
   CHATGPT_EFFORT_SLIDER_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
+  CHATGPT_TURN_CONTAINER_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   assertTemporaryChatPage,
+  chatGptResponseTurnSelector,
   parseChatGptEffortSliderState,
 } from "../src/chatgpt-session";
 
@@ -26,7 +28,8 @@ function shellDocument(html: string): Document {
 
 function matches(document: Document, selector: string): string[] {
   return Array.from(document.querySelectorAll(selector))
-    .map(element => element.id || element.getAttribute("class") || element.tagName);
+    .map(element => element.id || element.getAttribute("aria-label")
+      || element.getAttribute("class") || element.tagName);
 }
 
 function insideComposerForm(document: Document, selector: string): string[] {
@@ -69,7 +72,9 @@ test("turn, completion and streaming controls are found on the current shell", (
   expect(assistants).toHaveLength(1);
   expect(assistants[0].textContent).toContain("CODEX WEB GPT READY");
   expect(matches(document, CHATGPT_USER_TURN_SELECTOR)).toHaveLength(1);
-  expect(matches(document, CHATGPT_COMPLETION_ACTION_SELECTOR)).toHaveLength(1);
+  // Only the assistant action bar is completion evidence; the user turn's own "复制消息" is not.
+  expect(matches(document, CHATGPT_COMPLETION_ACTION_SELECTOR)).toEqual(["复制"]);
+  expect(matches(document, 'button[aria-label="复制消息"]')).toHaveLength(1);
   expect(matches(document, CHATGPT_STOP_BUTTON_SELECTOR)).toHaveLength(1);
   expect(matches(document, '[data-testid="conversation-turn-"], [data-message-author-role]')).toHaveLength(0);
 });
@@ -78,6 +83,20 @@ test("the legacy shell still matches the legacy markers", () => {
   const document = shellDocument(legacyHtml);
   expect(matches(document, CHATGPT_COMPLETION_ACTION_SELECTOR)).toHaveLength(1);
   expect(matches(document, CHATGPT_ASSISTANT_TURN_SELECTOR)).toHaveLength(1);
+});
+
+test("the turn identity binds the turn that owns the answer and its action bar", () => {
+  const document = shellDocument(shellHtml);
+  const bound = document.querySelectorAll(chatGptResponseTurnSelector("turn-1"));
+  expect(bound).toHaveLength(1);
+  // The bound element must own the answer root and the action bar that proves completion.
+  expect(bound[0].querySelectorAll("[data-markdown-text-style]")).toHaveLength(1);
+  expect(bound[0].querySelectorAll(CHATGPT_COMPLETION_ACTION_SELECTOR)).toHaveLength(1);
+  // The user turn's own "复制消息" action lives in the same turn and must never be adopted.
+  expect(bound[0].querySelectorAll('button[aria-label="复制消息"]')).toHaveLength(1);
+  expect(matches(document, CHATGPT_TURN_CONTAINER_SELECTOR)).toEqual(["turn"]);
+  // Answer text is read from the Markdown root, so the user's own message cannot join it.
+  expect(bound[0].querySelector("[data-markdown-text-style]")?.textContent).toContain("CODEX WEB GPT READY");
 });
 
 test("an isolated conversation path still proves the Temporary Chat surface", async () => {

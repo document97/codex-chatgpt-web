@@ -112,7 +112,7 @@ test("submission DOM tracks logical identities and retains virtualized history i
     document: {
       documentElement: {},
       querySelectorAll: (selector: string) => {
-        if (selector === "[data-turn-id-container]") {
+        if (selector.includes("data-turn-id-container")) {
           return turns.flatMap(turn => [element(turn, true), ...(turn.mounted ? [element(turn, false)] : [])]);
         }
         const role = selector.includes('="assistant"') ? "assistant" : selector.includes('="user"') ? "user" : undefined;

@@ -46,10 +46,14 @@ import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
+  chatGptResponseTurnSelector,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_TURN_CONTAINER_IDENTITY_ATTRIBUTES,
+  CHATGPT_TURN_CONTAINER_SELECTOR,
+  CHATGPT_TURN_MESSAGE_IDENTITY_ATTRIBUTES,
   CHATGPT_EFFORT_CONTROL_IN_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
@@ -154,6 +158,11 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-turn",
   "data-turn-id",
   "data-turn-id-container",
+  "data-turn-key",
+  "data-content-search-turn-key",
+  "data-chatgpt-search-message-ids",
+  "data-markdown-text-style",
+  "data-user-message-bubble",
   "disabled",
   "hidden",
   "inert",
@@ -2802,10 +2811,27 @@ export class ChatGptBrowserWorker {
       })();
       const observerKey = `${observerState.id}:${observerState.revision}`;
       if (options.knownKey === observerKey) return { key: observerKey };
-      const identities = (elements: Element[], attribute: string): string[] => {
-        const values = elements.map(element => element.getAttribute(attribute));
-        if (values.some(value => typeof value !== "string" || value.trim().length === 0)) {
-          throw new Error(`ChatGPT conversation turn has no stable ${attribute} identity`);
+      const firstAttribute = (element: Element, attributes: readonly string[]): string | null => {
+        for (const attribute of attributes) {
+          const value = element.getAttribute(attribute);
+          if (typeof value === "string" && value.trim().length > 0) return value;
+        }
+        return null;
+      };
+      // The legacy shell stamps the turn id on the message itself and repeats it on the container
+      // as data-turn-id-container. The current shell stamps neither on the message: it keeps one
+      // UUID per turn on [data-turn-key], so a message belongs to its nearest container.
+      const containerIdentity = (element: Element): string | null =>
+        firstAttribute(element, options.turnContainerIdentityAttributes);
+      const turnIdentity = (element: Element): string | null =>
+        firstAttribute(element, options.turnMessageIdentityAttributes)
+        ?? containerIdentity(element.closest(options.turnContainerSelector) ?? element);
+      const identities = (elements: Element[], label: string): string[] => {
+        const values = elements.map(element => label === "turn"
+          ? containerIdentity(element)
+          : turnIdentity(element));
+        if (values.some(value => value === null)) {
+          throw new Error(`ChatGPT conversation turn has no stable ${label} identity`);
         }
         const typed = values as string[];
         if (new Set(typed).size !== typed.length) {
@@ -2823,12 +2849,19 @@ export class ChatGptBrowserWorker {
       };
       // data-testid contains a display index: ChatGPT can renumber it while the same turn lives.
       // Virtualization removes a turn's section, but retains its outer identity container.
-      const containers = [...document.querySelectorAll("[data-turn-id-container]")].filter(element =>
-        element.parentElement?.closest("[data-turn-id-container]")?.getAttribute("data-turn-id-container")
-          !== element.getAttribute("data-turn-id-container"));
-      const turnIdentities = identities(containers, "data-turn-id-container");
-      const userIdentities = identities([...document.querySelectorAll(options.userTurnSelector)], "data-turn-id");
-      const responseIdentities = identities([...document.querySelectorAll(options.assistantTurnSelector)], "data-turn-id");
+      const containers = [...document.querySelectorAll(options.turnContainerSelector)].filter(element => {
+        const parent = element.parentElement?.closest(options.turnContainerSelector);
+        return !parent || containerIdentity(parent) !== containerIdentity(element);
+      });
+      const turnIdentities = identities(containers, "turn");
+      const userIdentities = identities(
+        [...document.querySelectorAll(options.userTurnSelector)],
+        "user turn",
+      );
+      const responseIdentities = identities(
+        [...document.querySelectorAll(options.assistantTurnSelector)],
+        "assistant turn",
+      );
       const knownTurns = new Set(turnIdentities);
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
@@ -2848,6 +2881,9 @@ export class ChatGptBrowserWorker {
       userTurnSelector: CHATGPT_USER_TURN_SELECTOR,
       assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
       stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
+      turnContainerSelector: CHATGPT_TURN_CONTAINER_SELECTOR,
+      turnContainerIdentityAttributes: [...CHATGPT_TURN_CONTAINER_IDENTITY_ATTRIBUTES],
+      turnMessageIdentityAttributes: [...CHATGPT_TURN_MESSAGE_IDENTITY_ATTRIBUTES],
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
     }), signal));
@@ -2888,7 +2924,7 @@ export class ChatGptBrowserWorker {
       state.responseIdentities,
     );
     if (!identity) return "";
-    const locator = page.locator(`[data-turn-id=${JSON.stringify(identity)}]`);
+    const locator = page.locator(chatGptResponseTurnSelector(identity));
     return (await this.responseDomSnapshot(locator, {})).visibleText;
   }
 
@@ -3021,7 +3057,7 @@ export class ChatGptBrowserWorker {
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
         const boundaryText = identity
           ? (await this.responseDomSnapshot(
-            observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+            observationPage.locator(chatGptResponseTurnSelector(identity)),
             {},
           )).visibleText
           : "";
@@ -3030,7 +3066,7 @@ export class ChatGptBrowserWorker {
       }
       if (identity) return {
         identity,
-        locator: observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+        locator: observationPage.locator(chatGptResponseTurnSelector(identity)),
         acceptedTurnIdentities: state.turnIdentities,
       };
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
@@ -3074,7 +3110,7 @@ export class ChatGptBrowserWorker {
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
-      locator: page.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+      locator: page.locator(chatGptResponseTurnSelector(identity)),
       acceptedTurnIdentities: state.turnIdentities,
     };
   }
@@ -3997,7 +4033,7 @@ export class ChatGptBrowserWorker {
       // ChatGPT's DIL renderer has no .markdown class (#538). Read its response root within the
       // assistant-owned PUIK container; the CSS module hash is build-specific. Both renderers
       // feed the same content serializer and completion checks below, without reading UI text.
-      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"]';
+      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"], [data-markdown-text-style]';
       // ChatGPT uses the same content renderer for intermediate commentary and for the final
       // answer. Older responses nested commentary in the streaming-status container. Pro can also
       // render a completed commentary Markdown root immediately before that live status container.

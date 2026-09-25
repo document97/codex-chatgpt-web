@@ -55,10 +55,12 @@ export const CHATGPT_STOP_BUTTON_SELECTOR = [
   'button[aria-label="停止"]',
   'button[aria-label="Stop"]',
 ].join(", ");
+// The current shell labels the assistant turn's action bar "复制"/"Copy". Its user turn carries a
+// separate "复制消息"/"Copy message" action ahead of the answer, which is not completion evidence.
 export const CHATGPT_COMPLETION_ACTION_SELECTOR = [
   'button[data-testid="copy-turn-action-button"]',
-  'button[aria-label="复制消息"]',
-  'button[aria-label="Copy message"]',
+  'button[aria-label="复制"]',
+  'button[aria-label="Copy"]',
 ].join(", ");
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
@@ -74,6 +76,30 @@ export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
   "[data-user-message-bubble]",
 ].join(", ");
+// The current shell drops data-turn-id* and keeps one UUID per turn on [data-turn-key].
+export const CHATGPT_TURN_CONTAINER_SELECTOR = "[data-turn-id-container], [data-turn-key]";
+// Identity stamped on the turn owner itself: legacy containers, current turn containers.
+export const CHATGPT_TURN_CONTAINER_IDENTITY_ATTRIBUTES = [
+  "data-turn-id-container",
+  "data-turn-key",
+] as const;
+// Identity stamped on a message. The current shell stamps none, so a message belongs to the
+// nearest container instead.
+export const CHATGPT_TURN_MESSAGE_IDENTITY_ATTRIBUTES = ["data-turn-id"] as const;
+// How a known turn identity is located again once the submission was accepted.
+export const CHATGPT_TURN_IDENTITY_ATTRIBUTES = ["data-turn-id", "data-turn-key"] as const;
+
+/**
+ * Locate the element that owns one accepted turn. The legacy shell stamps the turn id on the
+ * assistant message; the current shell stamps it on the turn container, whose action bar sits
+ * beside the message rather than inside it. Answer text is still read from the Markdown roots
+ * inside this element, so the user's own message never joins the answer.
+ */
+export function chatGptResponseTurnSelector(identity: string): string {
+  return CHATGPT_TURN_IDENTITY_ATTRIBUTES
+    .map(attribute => `[${attribute}=${JSON.stringify(identity)}]`)
+    .join(", ");
+}
 
 export interface ChatGptEffortSliderState {
   min: number;

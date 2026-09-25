@@ -10,7 +10,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -112,7 +112,7 @@ test("submission DOM tracks logical identities and retains virtualized history i
     document: {
       documentElement: {},
       querySelectorAll: (selector: string) => {
-        if (selector === "[data-turn-id-container]") {
+        if (selector.includes("data-turn-id-container")) {
           return turns.flatMap(turn => [element(turn, true), ...(turn.mounted ? [element(turn, false)] : [])]);
         }
         const role = selector.includes('="assistant"') ? "assistant" : selector.includes('="user"') ? "user" : undefined;
@@ -629,7 +629,15 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     click: async () => { sendClicks += 1; },
   };
   const composer = {
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: (selector: string) => {
+      expect(selector).toBe("xpath=ancestor::form[1]");
+      return {
+        locator: (inner: string) => {
+          expect(inner).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+          return sendButton;
+        },
+      };
+    },
   };
   worker.activeComposer = async () => composer;
 
@@ -748,7 +756,12 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     },
   };
   worker.activeComposer = async () => ({
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({
+      locator: (selector: string) => {
+        expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+        return sendButton;
+      },
+    }),
   });
   worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
 
@@ -2223,8 +2236,8 @@ test("image attachment readiness uses exact file tiles and not localized remove-
         },
       };
     },
-    getByTestId: (testId: string) => {
-      expect(testId).toBe("send-button");
+    locator: (selector: string) => {
+      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
     },
   };

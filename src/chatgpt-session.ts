@@ -36,6 +36,28 @@ export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
+/**
+ * Suggestion and command rows across the shells this adapter supports. The current composer renders
+ * them as plain list-navigation buttons with no role and no tabindex; the display name lives in one
+ * child element and its description is a sibling, so the row's own text is "<name><description>".
+ * The CSS-module `__menu-item` shape is the legacy contract.
+ */
+export const CHATGPT_MENU_ROW_SELECTOR = [
+  'button[data-list-navigation-item="true"]',
+  '.__menu-item[tabindex="0"]',
+].join(", ");
+/**
+ * A selected connector is an app mention node in the current ProseMirror composer, carrying the
+ * display name in `app-mention-display-name`; legacy builds used a Lexical plugin pill whose
+ * `data-keyword` held the same name. Reading either keeps connector proofs comparable.
+ */
+export const CHATGPT_SELECTED_CONNECTOR_SELECTOR = [
+  "[app-mention-name]",
+  '[data-id^="plugin:"][data-keyword]',
+].join(", ");
+export const CHATGPT_SELECTED_CONNECTOR_NAME_ATTRIBUTE = "app-mention-display-name";
+/** The current menu marks its keyboard owner with aria-current instead of data-highlighted. */
+export const CHATGPT_MENU_ROW_HIGHLIGHT_ATTRIBUTES = ["data-highlighted", "aria-current"];
 // The current shell keeps the same ARIA contract but renames the container markers: the visible
 // range wrapper is [data-model-picker-power-slider] and its keyboard owner is [data-reasoning-slider].
 export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = [

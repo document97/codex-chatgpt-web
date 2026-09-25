@@ -50,7 +50,9 @@ test("multipart selection accounts for whole-record and composer fit before subm
     }
     if (!parts && contents.length > 1) expect((compiled.files ?? []).length).toBeGreaterThan(0);
   }
-}, 60_000);
+  // This compiles and re-tokenizes megabyte-scale records, and the Windows runner is several times
+  // slower than a developer machine; the assertions above are the contract, not the budget.
+}, 180_000);
 
 test("Bigger Context adds a part instead of planning a message ChatGPT will reject", () => {
   // Live shape: a fresh browser chat replaying 86,173 estimated input tokens in two visible

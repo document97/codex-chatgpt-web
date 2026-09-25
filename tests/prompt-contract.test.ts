@@ -983,7 +983,9 @@ test("P5: a whole-context attachment past the measured single-file ceiling fails
     retryable: false,
   });
   expect(String((failure as Error).message)).toContain("/compact");
-});
+  // Tokenizing twelve 60k-character records dominates this case, and the Windows runner is several
+  // times slower than a developer machine; the assertion above is the contract, not the budget.
+}, 60_000);
 
 test("R1: Luna turns also pin the verbatim latest human request at the tail", () => {
   const parsed = request("low");

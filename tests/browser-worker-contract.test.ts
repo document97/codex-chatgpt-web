@@ -1495,8 +1495,18 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     count: async () => catalogFresh ? 1 : 0,
     getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
   };
+  // Mirror the measured row: the row's own text is "<name><description>" while the display name is
+  // one child element's exact text, which is what the connector proofs key on.
+  const connectorRowNode = (name: string, description: string) => {
+    const label = { textContent: name, querySelectorAll: () => [] };
+    return { textContent: `${name}${description}`, querySelectorAll: () => [label] };
+  };
   const visibleRows = {
-    allInnerTexts: async () => catalogFresh ? ["Codex Native2"] : ["Another connector"],
+    evaluateAll: async (read: (rows: unknown[]) => string[]) => read([
+      catalogFresh
+        ? connectorRowNode("Codex Native2", "test")
+        : connectorRowNode("Another connector", ""),
+    ]),
   };
   const menuRows = {
     filter: (options: { has?: unknown; visible?: boolean }) => options.visible ? visibleRows : appResult,

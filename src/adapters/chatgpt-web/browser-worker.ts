@@ -58,6 +58,10 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
+  CHATGPT_MENU_ROW_HIGHLIGHT_ATTRIBUTES,
+  CHATGPT_MENU_ROW_SELECTOR,
+  CHATGPT_SELECTED_CONNECTOR_NAME_ATTRIBUTE,
+  CHATGPT_SELECTED_CONNECTOR_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
@@ -1381,8 +1385,10 @@ export async function setChatGptThinkMode(
     const composer = composerForm.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
     const composerState = () => composer.evaluate(element => {
       const copy = element.cloneNode(true) as HTMLElement;
-      const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword]')];
-      const connectors = pills.map(pill => pill.getAttribute("data-keyword")).sort();
+      const pills = [...copy.querySelectorAll('[app-mention-name], [data-id^="plugin:"][data-keyword]')];
+      const connectors = pills
+        .map(pill => pill.getAttribute("app-mention-display-name") ?? pill.getAttribute("data-keyword"))
+        .sort();
       for (const pill of pills) pill.remove();
       const text = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
         ? element.value : copy.textContent ?? "";
@@ -1394,18 +1400,28 @@ export async function setChatGptThinkMode(
     await composer.press(CHATGPT_COMPOSER_DOCUMENT_END_KEY, actionOptions);
     await composer.pressSequentially("/think", { ...actionOptions, delay: 25 });
     await captureDiagnostic?.("think-slash-triggered");
-    // The command popup shares menu-item classes with sidebar history. Count only this popup.
-    const popup = composerForm.page().locator('.popover[aria-busy="false"]').filter({ visible: true });
-    const rows = popup.locator('.__menu-item[tabindex="0"]').filter({ visible: true });
+    // The command popup shares its row classes with other lists, so count only the floating
+    // composer overlay. Current shells mark it with data-composer-overlay-floating-ui; older ones
+    // used a .popover host.
+    const popup = composerForm.page().locator([
+      '[data-composer-overlay-floating-ui="true"]',
+      '.popover[aria-busy="false"]',
+    ].join(", ")).filter({ visible: true });
+    const rows = popup.locator(CHATGPT_MENU_ROW_SELECTOR).filter({ visible: true });
     await rows.first().waitFor({ state: "visible", timeout: 5_000, signal: abortSignal });
     if (await popup.count() !== 1 || await rows.count() !== 1) {
       throw new Error("ChatGPT Think slash menu must expose exactly one command option");
     }
     const row = rows.first();
-    if (await row.getAttribute("data-highlighted", actionOptions) === null) {
+    // Current rows announce the keyboard owner with aria-current; legacy rows used data-highlighted.
+    const rowHighlighted = async () => (
+      await row.getAttribute("data-highlighted", actionOptions) !== null
+      || await row.getAttribute("aria-current", actionOptions) === "true"
+    );
+    if (!await rowHighlighted()) {
       await composer.press("ArrowDown", actionOptions);
     }
-    if (await row.getAttribute("data-highlighted", actionOptions) === null) {
+    if (!await rowHighlighted()) {
       throw new Error("ChatGPT Think slash option is not highlighted");
     }
     await captureDiagnostic?.("think-slash-menu-ready");
@@ -1848,6 +1864,9 @@ class ChatGptBrowserDiagnostics {
           stopButtonSelector,
           completionActionSelector,
           appName,
+          connectorRowSelector,
+          selectedConnectorSelector,
+          selectedConnectorNameAttribute,
         }) => {
           const rendered = (element: Element): boolean => {
             const candidate = element as HTMLElement;
@@ -1883,10 +1902,10 @@ class ChatGptBrowserDiagnostics {
           const composers = [...document.querySelectorAll(composerSelector)].filter(rendered);
           const assistantTurns = [...document.querySelectorAll(assistantTurnSelector)].filter(rendered);
           const selectedConnectors = composers.flatMap(composer => (
-            [...composer.querySelectorAll('[data-id^="plugin:"][data-keyword]')]
+            [...composer.querySelectorAll(selectedConnectorSelector)]
           ))
             .filter(rendered);
-          const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"]')]
+          const exactConnectorRows = [...document.querySelectorAll(connectorRowSelector)]
             .filter(element => rendered(element) && exactText(element, appName));
           const currentUrl = new URL(location.href);
           const integerAttribute = (element: Element, name: string): number | null => {
@@ -1919,7 +1938,8 @@ class ChatGptBrowserDiagnostics {
               })),
               selectedConnectorCount: selectedConnectors.length,
               exactSelectedConnectorCount: selectedConnectors.filter(
-                element => element.getAttribute("data-keyword") === appName,
+                element => element.getAttribute(selectedConnectorNameAttribute) === appName
+                  || element.getAttribute("data-keyword") === appName,
               ).length,
             },
             focus: {
@@ -1974,6 +1994,9 @@ class ChatGptBrowserDiagnostics {
           stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
           completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
           appName: this.appName,
+          connectorRowSelector: CHATGPT_MENU_ROW_SELECTOR,
+          selectedConnectorSelector: CHATGPT_SELECTED_CONNECTOR_SELECTOR,
+          selectedConnectorNameAttribute: CHATGPT_SELECTED_CONNECTOR_NAME_ATTRIBUTE,
         })),
       ]);
       const capturedAt = new Date().toISOString();
@@ -3120,7 +3143,7 @@ export class ChatGptBrowserWorker {
     return composer.evaluate(element => {
       const clone = element.cloneNode(true) as HTMLElement;
       clone.querySelectorAll(
-        '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]',
+        '[app-mention-name], [data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]',
       )
         .forEach(part => part.remove());
       return [...clone.childNodes]
@@ -3156,16 +3179,21 @@ export class ChatGptBrowserWorker {
 
   private selectedConnectorControl(composer: Locator): Locator {
     return composer
-      .locator('[data-id^="plugin:"][data-keyword]')
+      .locator(CHATGPT_SELECTED_CONNECTOR_SELECTOR)
       .filter({ hasText: this.config.appName, visible: true });
   }
 
   private async connectorIsSelected(composer: Locator, abortSignal?: AbortSignal): Promise<boolean> {
     const selected = this.selectedConnectorControl(composer);
     const keywords = await withBrowserTurnAbort(
-      withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
-        elements.map(element => element.getAttribute("data-keyword"))
-      ))),
+      // The page-side callback is serialized into the browser, so the display-name attribute has to
+      // travel in as an argument instead of closing over this module's constant.
+      withChatGptBrowserObservationTimeout(selected.evaluateAll((elements, nameAttribute) => (
+        elements.map(element => (
+          element.getAttribute(nameAttribute)
+          ?? element.getAttribute("data-keyword")
+        ))
+      ), CHATGPT_SELECTED_CONNECTOR_NAME_ATTRIBUTE)),
       abortSignal,
     );
     const exactMatches = keywords.filter(keyword => keyword === this.config.appName).length;
@@ -3179,19 +3207,27 @@ export class ChatGptBrowserWorker {
     menuRows: Locator,
     abortSignal?: AbortSignal,
   ): Promise<string[]> {
-    let texts: string[];
+    let labels: string[];
     try {
-      texts = await withBrowserTurnAbort(
-        withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).allInnerTexts()),
+      // Current rows concatenate "<display name><description>", so the name a row exposes is the text
+      // of one of its child elements rather than the row's own first line. Collect every exact
+      // element text (plus the row's own text) so migration and catalog-stale proofs keep matching a
+      // single connector name in either shell.
+      labels = await withBrowserTurnAbort(
+        withChatGptBrowserObservationTimeout(
+          menuRows.filter({ visible: true }).evaluateAll(rows => rows.flatMap(row => (
+            [row, ...row.querySelectorAll("*")]
+              .map(node => (node.textContent ?? "").replace(/\s+/g, " ").trim())
+              .filter(label => label.length > 0 && label.length <= 64)
+          ))),
+        ),
         abortSignal,
       );
     } catch (error) {
       if (abortSignal?.aborted) throw error;
-      texts = [];
+      labels = [];
     }
-    return texts
-      .map(text => (text.split("\n")[0] ?? "").replace(/\s+/g, " ").trim())
-      .filter(title => title.length > 0);
+    return [...new Set(labels)];
   }
 
   private async connectorMentionFailure(
@@ -3260,7 +3296,7 @@ export class ChatGptBrowserWorker {
       throwIfPromptAttachmentAborted(abortSignal);
     };
     let composer: Locator;
-    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    const menuRows = page.locator(CHATGPT_MENU_ROW_SELECTOR);
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
@@ -3399,10 +3435,15 @@ export class ChatGptBrowserWorker {
       // otherwise move the menu highlight until it does. Keep
       // focus on the composer, activate through the menu's real keyboard owner, then prove the exact
       // selected connector pill below.
-      const rowHighlighted = async () => await appResult.getAttribute("data-highlighted", {
-        signal: abortSignal,
-        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      }) !== null;
+      const rowHighlighted = async () => {
+        const options = { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS };
+        // Legacy rows set data-highlighted to an empty string; the current menu marks its keyboard
+        // owner with aria-current="true". Either state means Enter activates this exact row.
+        const [legacyHighlight, currentHighlight] = await Promise.all(
+          CHATGPT_MENU_ROW_HIGHLIGHT_ATTRIBUTES.map(attribute => appResult.getAttribute(attribute, options)),
+        );
+        return legacyHighlight !== null || currentHighlight === "true";
+      };
       if (!await rowHighlighted()) {
         const visibleRowCount = await withBrowserTurnAbort(
           withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),

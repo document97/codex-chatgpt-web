@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  Connector suggestion menu and selected-connector state measured on the current chatgpt.com shell
+  (ProseMirror composer, 2026-09-25). The row is a plain list-navigation button with no role and no
+  tabindex; its own text is "<display name><description>" while the display name is one child
+  element's exact text, and the keyboard owner carries aria-current="true" instead of
+  data-highlighted. Selecting it writes an app mention node into the composer.
+-->
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>ChatGPT</title></head>
+  <body>
+    <main>
+      <div class="relative z-20 pt-1.5 pb-4">
+        <form data-chatgpt-composer class="relative flex flex-col gap-2 composer-RpsXSy">
+          <div contenteditable="true" role="textbox" class="ProseMirror" data-testid="">
+            <p><span app-mention-name="codex-native2" app-mention-display-name="Codex Native2"
+                     app-mention-path="app://asdk_app_6aa3edce91288191874cee5131c4c9af"
+                     app-mention-icon="connectors://asdk_app_6aa3edce91288191874cee5131c4c9af/logo?theme=light"
+                     app-mention-brand-color="" data-prompt-link-href="app://asdk_app_6aa3edce91288191874cee5131c4c9af"
+                     data-prompt-link-label="$codex-native2" class="Mention-hIgCkC" data-layout="inline">Codex Native2</span></p>
+          </div>
+          <button type="button" aria-label="添加文件等内容" data-testid="composer-attach-button"></button>
+          <button type="submit" aria-label="发送" data-testid="send-button"></button>
+        </form>
+      </div>
+      <div class="flex flex-col overflow-hidden border-default">
+        <button class="text-default outline-hidden focus:bg-primary-ghost-hover cursor-interaction flex w-full min-h-[var(--app-menu-item-height,0px)] shrink-0 items-center overflow-hidden rounded-[var(--suggestion-menu-item-radius,var(--radius-xl))] p-[var(--suggestion-menu-item-padding,var(--app-menu-item-padding,var(--padding-row-y)_var(--padding-row-x)))] text-start text-sm [content-visibility:auto] [contain-intrinsic-block-size:auto_1lh] bg-primary-ghost-hover opacity-100" type="button" data-list-navigation-item="true" aria-current="true"><div class="flex w-full min-w-0 items-center gap-[var(--spacing-menu-item-content,calc(var(--spacing)*1.5))]"><span class="leadingIcon-nJYd0H"><svg aria-hidden="true"></svg></span><span class="flex-1"><span class="flex"><span class="min-w-0">Codex Native2</span><span class="min-w-0">test</span></span></span></div></button>
+        <button class="text-default outline-hidden focus:bg-primary-ghost-hover cursor-interaction flex w-full shrink-0 items-center text-start text-sm" type="button" data-list-navigation-item="true"><div class="flex w-full min-w-0 items-center gap-2"><span class="flex-1"><span class="flex"><span class="min-w-0">OpenAI Platform</span><span class="min-w-0">Manage OpenAI API keys and view org</span></span></span></div></button>
+      </div>
+    </main>
+  </body>
+</html>

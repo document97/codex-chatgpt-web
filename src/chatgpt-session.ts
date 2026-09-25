@@ -6,6 +6,11 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
+  // The current composer is a ProseMirror editor that ships with no prompt-textarea marker and no
+  // Lexical marker; the launcher host already accepts this shape for its own session probe, so the
+  // helper must accept it too or every operation reports the session surface as unavailable.
+  '[contenteditable="true"][role="textbox"].ProseMirror',
+  '[contenteditable="true"][role="textbox"]',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',

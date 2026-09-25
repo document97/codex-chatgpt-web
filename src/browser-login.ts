@@ -411,7 +411,7 @@ export async function loginToChatGpt(
       timeout: 60_000,
     });
     const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" }).or(
-      page.locator('[data-testid="prompt-textarea"], [contenteditable="true"][data-lexical-editor="true"]'),
+      page.locator('[data-testid="prompt-textarea"], [contenteditable="true"][data-lexical-editor="true"], [contenteditable="true"][role="textbox"]'),
     ).first();
     try {
       await composer.waitFor({ state: "visible", timeout: options.timeoutMs ?? 60_000 });

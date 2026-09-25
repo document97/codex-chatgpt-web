@@ -1,0 +1,60 @@
+<!-- Minimized from the observed DOM of the current ChatGPT shell (build
+     d162ff8608974cc5816780714716795610d9a981) on the isolated Temporary Chat surface,
+     2026-09-25. The shell ships no prompt-textarea or data-lexical-editor marker: the prompt
+     editor is a ProseMirror div[contenteditable][role=textbox], the model picker is the composer
+     form's only [aria-haspopup="menu"] button, the send control is its only submit button, and the
+     effort range lives in [data-model-picker-power-slider]. The picker fragment is captured while
+     open, which is the only state that renders it. The sidebar menu button is a decoy: it must
+     never be adopted as the model picker. -->
+<nav id="sidebar">
+  <button id="page-menu" type="button" aria-haspopup="menu" aria-label="Account menu"></button>
+</nav>
+<section id="composer" data-app-shell-main-surface="true">
+  <form class="relative flex flex-col gap-2 composer-RpsXSy" data-composer-placement="home" data-chatgpt-composer="" data-thread-find-composer="true">
+    <input id="attach-media" class="hidden" accept="image/*,video/*" aria-label="Attach photos or videos" multiple type="file">
+    <div class="ComposerLayoutRoot-XCKS7O" data-composer-layout="multiline">
+      <div class="ComposerLayoutBody-uBBf1A" data-composer-body="">
+        <div class="ProseMirror ProseMirror-focused" contenteditable="true" role="textbox" aria-label="Ask ChatGPT"></div>
+        <div class="ComposerLayoutFooter-_8IVRO" data-composer-footer-responsive="">
+          <div class="flex min-w-0 items-center gap-[5px]">
+            <button type="button" aria-label="Add files and more"></button>
+            <button id="composer-model-picker" type="button" aria-haspopup="menu" aria-expanded="false">Thinking medium</button>
+            <button type="button" aria-label="Dictate"></button>
+          </div>
+          <button type="submit" aria-label="Send"></button>
+        </div>
+      </div>
+    </div>
+  </form>
+</section>
+<div id="picker" class="Container-qxn8NG" data-model-picker-power-slider="" data-keyboard-focused="true">
+  <div role="menu" id="radix-picker">
+    <div role="menuitemradio" aria-checked="true">GPT-5.6 Sol</div>
+    <div role="menuitemradio" aria-checked="false">GPT-5.5</div>
+    <div role="menuitem" data-reasoning-slider="" data-orientation="horizontal">
+      <span class="Root-MhaajB" data-orientation="horizontal">
+        <span class="ThumbInput-uGPr52" role="slider" aria-valuemin="0" aria-valuemax="2" aria-valuenow="1"></span>
+      </span>
+    </div>
+  </div>
+</div>
+<section id="turn" data-turn-key="turn-1" class="[&amp;_[data-virtualized-turn-content]]:[content-visibility:visible]">
+  <div class="flex flex-col gap-1.5" data-content-search-turn-key="turn-1">
+    <div class="group/user-message flex flex-col items-end gap-2" data-chatgpt-search-unit-key="unit-user">
+      <div class="bg-user-message" data-user-message-bubble="">
+        <div class="text-size-chat whitespace-pre-wrap">Reply with exactly: CODEX WEB GPT READY</div>
+      </div>
+    </div>
+    <div data-content-search-unit-key="unit-assistant" data-chatgpt-search-message-ids="msg-assistant">
+      <div class="group flex min-w-0 flex-col" data-chatgpt-selection-conversation-id="conv-1" data-chatgpt-selection-message-id="msg-assistant">
+        <div class="MarkdownRoot-rZKhxa" data-markdown-text-style="" data-selected-text-overlay-target="">
+          <p class="Paragraph-kKnbIo"><span>CODEX WEB GPT READY</span></p>
+        </div>
+        <div class="flex turn-action-controls items-center gap-0.5">
+          <button type="button" aria-label="Copy message"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+<button type="button" aria-label="Stop"></button>

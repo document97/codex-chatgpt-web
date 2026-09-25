@@ -15,6 +15,20 @@ export const CHATGPT_COMPOSER_SELECTOR = [
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  // The current shell exposes exactly one menu button inside the composer form: the model and
+  // effort picker. Anchor it to that form so unrelated page menus are never adopted.
+  'form[data-chatgpt-composer] button[aria-haspopup="menu"]',
+].join(", ");
+// Same control, addressed relative to the composer form the caller already holds.
+export const CHATGPT_EFFORT_CONTROL_IN_COMPOSER_SELECTOR = [
+  'button[aria-haspopup="menu"][data-tone="neutral"]',
+  'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  'button[aria-haspopup="menu"]',
+].join(", ");
+// The current shell renders the send control as the composer form's only submit button.
+export const CHATGPT_SEND_BUTTON_SELECTOR = [
+  'button[type="submit"]',
+  '[data-testid="send-button"]',
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
@@ -22,20 +36,43 @@ export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
-export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider]';
-export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"]';
+// The current shell keeps the same ARIA contract but renames the container markers: the visible
+// range wrapper is [data-model-picker-power-slider] and its keyboard owner is [data-reasoning-slider].
+export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = [
+  "[data-model-reasoning-effort-slider]",
+  "[data-model-picker-power-slider]",
+  "[data-reasoning-slider]",
+].join(", ");
+export const CHATGPT_EFFORT_SLIDER_SELECTOR = [
+  '[data-model-reasoning-effort-slider] [role="slider"]',
+  '[data-model-picker-power-slider] [role="slider"]',
+  '[data-reasoning-slider] [role="slider"]',
+].join(", ");
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
-export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
-export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
+// The current shell drops the stop test id and labels the streaming control in the UI language.
+export const CHATGPT_STOP_BUTTON_SELECTOR = [
+  '[data-testid="stop-button"]',
+  'button[aria-label="停止"]',
+  'button[aria-label="Stop"]',
+].join(", ");
+export const CHATGPT_COMPLETION_ACTION_SELECTOR = [
+  'button[data-testid="copy-turn-action-button"]',
+  'button[aria-label="复制消息"]',
+  'button[aria-label="Copy message"]',
+].join(", ");
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+  // The current shell tags each message wrapper instead of the turn and renders answers as
+  // [data-markdown-text-style] instead of .markdown.
+  "[data-chatgpt-selection-message-id]:has([data-markdown-text-style])",
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+  "[data-user-message-bubble]",
 ].join(", ");
 
 export interface ChatGptEffortSliderState {
@@ -176,7 +213,11 @@ export async function assertAuthenticatedChatGptPage(page: Page): Promise<void> 
 export async function assertTemporaryChatPage(page: Page): Promise<void> {
   const url = new URL(page.url());
   const expected = new URL(CHATGPT_TEMPORARY_CHAT_URL);
-  if (url.origin !== expected.origin || url.pathname !== expected.pathname || url.searchParams.get("temporary-chat") !== "true") {
+  // The current shell keeps ?temporary-chat=true but moves the document to /c/<conversation-id>
+  // as soon as the isolated chat holds its first turn, so the bare root path is no longer the
+  // only shape that proves this surface.
+  const onIsolatedPath = url.pathname === expected.pathname || /^\/c\/[^/]+$/.test(url.pathname);
+  if (url.origin !== expected.origin || !onIsolatedPath || url.searchParams.get("temporary-chat") !== "true") {
     throw new Error(`ChatGPT left the isolated Temporary Chat surface (${page.url()})`);
   }
 }
@@ -188,7 +229,7 @@ export async function detectChatGptAccountCapabilities(
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
   const composer = composers.last();
   const composerForm = composer.locator("xpath=ancestor::form[1]");
-  const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+  const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_IN_COMPOSER_SELECTOR).last();
   const deadline = Date.now() + (options.selectorTimeoutMs ?? 30_000);
   const stableAbsenceMs = options.stableAbsenceMs ?? 3_000;
   let absenceSince: number | undefined;

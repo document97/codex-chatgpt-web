@@ -49,6 +49,8 @@ import {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
+  CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_EFFORT_CONTROL_IN_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
@@ -2439,7 +2441,7 @@ export class ChatGptBrowserWorker {
     if (uiEffortIndex === null) {
       await settleChatGptUi();
       await throwIfChatGptRateLimitDialog(page);
-      const visibleControls = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+      const visibleControls = composerForm.locator(CHATGPT_EFFORT_CONTROL_IN_COMPOSER_SELECTOR).filter({ visible: true });
       if (await visibleControls.count() > 0) {
         throw chatGptModelControlUnavailableAdapterError(
           "ChatGPT Luna was selected from a Luna-only capability probe, but the account now exposes a model selector; rerun setup",
@@ -2450,7 +2452,7 @@ export class ChatGptBrowserWorker {
       if (!mode.thinkEnabled) await setChatGptThinkMode(composerForm, false, captureDiagnostic);
       return mode;
     }
-    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_IN_COMPOSER_SELECTOR).last();
     const effortWaitAbort = new AbortController();
     try {
       const ready = await Promise.race([
@@ -3534,7 +3536,7 @@ export class ChatGptBrowserWorker {
     const composer = await this.activeComposer(page);
     const sendButton = composer
       .locator("xpath=ancestor::form[1]")
-      .getByTestId("send-button");
+      .locator(CHATGPT_SEND_BUTTON_SELECTOR);
     await sendButton.waitFor({ state: "visible", timeout: browserStageTimeouts.send });
     await settleChatGptUi();
     const sendEnableDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
@@ -3889,7 +3891,7 @@ export class ChatGptBrowserWorker {
           + "The turn continues without those files; their paths remain in the task context, so ask for a local-tools read if the contents are required.",
         );
       }
-      const send = composerForm.getByTestId("send-button");
+      const send = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         if (await send.isEnabled().catch(() => false)) return;
